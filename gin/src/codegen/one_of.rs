@@ -41,6 +41,7 @@ pub(crate) fn generate(
 
         let variant_type = utils::field_type(ctx, qualified_name, &variant);
         let proto_attributes = utils::proto_attribute(&variant);
+        let configured_attributes = utils::configured_field_attributes(ctx, &variant);
 
         if utils::is_unit_type(&variant_type) {
             body.extend(quote::quote! {
@@ -48,6 +49,7 @@ pub(crate) fn generate(
             });
         } else {
             body.extend(quote::quote! {
+                #configured_attributes
                 #[gin(id = #id #proto_attributes)]
                 #variant_name(#variant_type),
             });
@@ -55,7 +57,7 @@ pub(crate) fn generate(
     }
 
     module.extend(quote::quote! {
-        #[derive(Clone, Debug, Eq, PartialEq, OneOf)]
+        #[derive(Clone, Debug, PartialEq, OneOf)]
         #attributes
         pub enum #ty_name {
             #body
@@ -90,14 +92,17 @@ pub(crate) fn generate_unwrapped(
 
         let variant_type = utils::field_type(ctx, qualified_name, &variant);
         let proto_attributes = utils::proto_attribute(&variant);
+        let configured_attributes = utils::configured_field_attributes(ctx, &variant);
 
         if utils::is_unit_type(&variant_type) {
             body.extend(quote::quote! {
+                #configured_attributes
                 #[gin(id = #id #proto_attributes)]
                 #variant_name,
             });
         } else {
             body.extend(quote::quote! {
+                #configured_attributes
                 #[gin(id = #id #proto_attributes)]
                 #variant_name(#variant_type),
             });
@@ -105,7 +110,7 @@ pub(crate) fn generate_unwrapped(
     }
 
     let item: syn::ItemEnum = syn::parse_quote! {
-        #[derive(Clone, Debug, ::gin_tonic::OneOf)]
+        #[derive(Clone, Debug, PartialEq, ::gin_tonic::OneOf)]
         #attributes
         pub enum #ty_name {
             #body

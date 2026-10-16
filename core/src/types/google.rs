@@ -3,7 +3,7 @@ use crate::{
     scalars::{Int32, Int64},
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Duration {
     pub seconds: i64,
     pub nanos: i32,
@@ -20,17 +20,23 @@ impl DurationBuilder {
     fn finish(self) -> Result<Duration, ProtoError> {
         let Self { seconds, nanos } = self;
         Ok(Duration {
-            seconds: seconds.ok_or(ProtoError::MissingField(1))?,
-            nanos: nanos.ok_or(ProtoError::MissingField(2))?,
+            seconds: seconds.unwrap_or_default(),
+            nanos: nanos.unwrap_or_default(),
         })
     }
 
     #[inline]
     fn decode_field(&mut self, tag: Tag, decoder: &mut impl Decode) -> Result<(), ProtoError> {
         match tag.field_number() {
-            1 => self.seconds = Some(Scalar::<Int64>::decode(decoder)?),
-            2 => self.nanos = Some(Scalar::<Int32>::decode(decoder)?),
-            _ => {}
+            1 => {
+                tag.expect_wire_type(0)?;
+                self.seconds = Some(Scalar::<Int64>::decode(decoder)?);
+            }
+            2 => {
+                tag.expect_wire_type(0)?;
+                self.nanos = Some(Scalar::<Int32>::decode(decoder)?);
+            }
+            _ => decoder.skip_field(tag)?,
         }
         Ok(())
     }
@@ -54,5 +60,19 @@ impl Message for Duration {
         }
 
         builder.finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::decoder::Decoder;
+
+    #[test]
+    fn duration_uses_scalar_defaults_and_skips_unknown_fields() {
+        let empty = Duration::decode_message(&mut Decoder::new(&[])).unwrap();
+        assert_eq!((empty.seconds, empty.nanos), (0, 0));
+        let value = Duration::decode_message(&mut Decoder::new(&[24, 42, 8, 1])).unwrap();
+        assert_eq!((value.seconds, value.nanos), (1, 0));
     }
 }

@@ -13,7 +13,7 @@ default = ["derive", "tonic", "generator"]
 secrecy = ["gin-tonic-core/secrecy", "gin-tonic-derive/secrecy"]
 uuid = ["gin-tonic-core/uuid", "gin-tonic-derive/uuid"]
 
-tonic = ["dep:tonic", "dep:tonic-build"]
+tonic = ["dep:tonic", "dep:tonic-build", "dep:bytes"]
 generator = [
   "dep:heck",
   "dep:proc-macro2",
@@ -26,6 +26,7 @@ derive = ["dep:gin-tonic-derive"]
 internals = []
 
 [dependencies]
+bytes = { workspace = true, optional = true }
 gin-tonic-core = { workspace = true }
 gin-tonic-derive = { workspace = true, optional = true }
 

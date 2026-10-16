@@ -36,10 +36,6 @@ pub(crate) fn generate(
             .full_name()
             .rsplit_once('.')
             .expect("Enum values should be in a package");
-        if value.ends_with("UNSPECIFIED") {
-            // TODO: add support for UNSPECIFIED variant
-            continue;
-        }
         let value = case::convert(value, case::Case::Pascal);
         let value = value
             .strip_prefix(ty_name.as_ref())
@@ -47,15 +43,24 @@ pub(crate) fn generate(
 
         let value_name = quote::format_ident!("{}", value);
 
+        let default = if id == 0 {
+            quote::quote!(#[default])
+        } else {
+            quote::quote!()
+        };
+        let configured = ctx.field_attributes(value);
         body.extend(quote::quote! {
+            #default
+            #configured
             #[gin(id = #id)]
-            #value_name,
+            #value_name = #id,
         });
     }
 
     let item: syn::ItemEnum = syn::parse_quote! {
-        #[derive(Clone, Copy, Debug, Eq, PartialEq, Enumeration)]
+        #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Enumeration)]
         #attributes
+        #[repr(i32)]
         pub enum #name {
             #body
         }

@@ -2,8 +2,8 @@
 
 use std::marker::PhantomData;
 
-use gin_tonic_core::{Message, decoder::Decoder, encoder::Encoder};
-use protox::prost::bytes::{Buf, BufMut};
+use bytes::{Buf, BufMut};
+use gin_tonic_core::{Message, decoder::Decoder};
 use tonic::codec::{DecodeBuf, EncodeBuf};
 
 #[derive(Debug, Clone)]
@@ -51,13 +51,8 @@ impl<T: Message + std::fmt::Debug> tonic::codec::Encoder for GinEncoder<T> {
     type Error = tonic::Status;
 
     fn encode(&mut self, item: Self::Item, dst: &mut EncodeBuf<'_>) -> Result<(), Self::Error> {
-        let size_hint = item.message_size_hint();
-        unsafe {
-            let slice = std::slice::from_raw_parts_mut(dst.chunk_mut().as_mut_ptr(), size_hint);
-            let mut encoder = Encoder::new(slice);
-            item.encode_message(&mut encoder);
-            dst.advance_mut(size_hint);
-        }
+        let encoded = encode_payload(item);
+        dst.put_slice(&encoded);
 
         Ok(())
     }
@@ -68,15 +63,62 @@ impl<U: Message + std::fmt::Debug> tonic::codec::Decoder for GinDecoder<U> {
     type Error = tonic::Status;
 
     fn decode(&mut self, src: &mut DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error> {
-        let len = src.remaining();
-        let decoded =
-            Self::Item::decode_message(&mut Decoder::new(src.chunk())).map_err(map_core_err)?;
-        src.advance(len);
+        let bytes = src.copy_to_bytes(src.remaining());
+        let decoded = decode_payload::<U>(&bytes)?;
 
         Ok(Some(decoded))
     }
 }
 
 fn map_core_err(err: gin_tonic_core::ProtoError) -> tonic::Status {
-    tonic::Status::internal(err.to_string())
+    tonic::Status::invalid_argument(err.to_string())
+}
+
+fn encode_payload<T: Message>(item: T) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    item.encode_message(&mut encoded);
+    encoded
+}
+
+fn decode_payload<U: Message>(bytes: &[u8]) -> Result<U, tonic::Status> {
+    U::decode_message(&mut Decoder::new(bytes)).map_err(map_core_err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gin_tonic_core::{Decode, Encode};
+
+    #[derive(Debug)]
+    struct Payload(Vec<u8>);
+    impl Message for Payload {
+        fn message_size_hint(&self) -> usize {
+            0
+        }
+        fn encode_message(&self, encoder: &mut impl Encode) {
+            encoder.encode_bytes(&self.0);
+        }
+        fn decode_message(decoder: &mut impl Decode) -> Result<Self, gin_tonic_core::ProtoError> {
+            decoder.decode_bytes().map(Self)
+        }
+    }
+
+    #[test]
+    fn encoding_grows_without_trusting_the_size_hint() {
+        let payload = vec![42; 64 * 1024];
+        let encoded = encode_payload(Payload(payload.clone()));
+        assert_eq!(decode_payload::<Payload>(&encoded).unwrap().0, payload);
+    }
+
+    #[test]
+    fn malformed_input_returns_invalid_argument() {
+        assert_eq!(
+            decode_payload::<Payload>(&[0x80]).unwrap_err().code(),
+            tonic::Code::InvalidArgument
+        );
+        assert_eq!(
+            decode_payload::<Payload>(&[10, 1]).unwrap_err().code(),
+            tonic::Code::InvalidArgument
+        );
+    }
 }

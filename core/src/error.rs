@@ -1,11 +1,15 @@
 use std::{array::TryFromSliceError, str::Utf8Error};
 
-use varint_simd::VarIntDecodeError;
-
 #[derive(Debug, thiserror::Error)]
 pub enum ProtoError {
-    #[error(transparent)]
-    VarInt(#[from] VarIntDecodeError),
+    #[error("Unexpected end of protobuf input")]
+    UnexpectedEof,
+    #[error("Protobuf varint exceeds 64 bits")]
+    VarIntOverflow,
+    #[error("Invalid protobuf tag {0}")]
+    InvalidTag(u64),
+    #[error("Expected wire type {expected}, got {actual}")]
+    UnexpectedWireType { expected: u8, actual: u8 },
     #[error(transparent)]
     Utf8(#[from] Utf8Error),
     #[error(transparent)]

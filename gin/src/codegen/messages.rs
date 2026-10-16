@@ -31,6 +31,7 @@ pub(crate) fn generate(
     tracing::info!("generating message: {qualified_name}");
 
     let attributes = ctx.attributes(qualified_name);
+    let inferred_derives = utils::message_derives(ctx, &ty);
 
     let module = module::create_child(parent, module_path);
 
@@ -56,8 +57,10 @@ pub(crate) fn generate(
 
             let field_type = utils::resolve_message(ctx, qualified_name, one_of.full_name());
 
+            let configured_attributes = ctx.field_attributes(one_of.full_name());
             body.extend(quote::quote! {
-                #[gin(id = 0)]
+                #configured_attributes
+                #[gin(id = 0, oneof)]
                 pub #field_name: #field_type,
             });
 
@@ -67,16 +70,29 @@ pub(crate) fn generate(
         let field_name = quote::format_ident!("{}", field.name());
         let field_type = utils::field_type(ctx, qualified_name, &field);
         let proto_attributes = utils::proto_attribute(&field);
+        let configured_attributes = utils::configured_field_attributes(ctx, &field);
+        let default_attribute = if !field.is_list()
+            && !field.is_map()
+            && !field.field_descriptor_proto().proto3_optional()
+            && !matches!(field.kind(), protox::prost_reflect::Kind::Message(_))
+        {
+            quote::quote!(#[gin(default)])
+        } else {
+            quote::quote!()
+        };
 
         body.extend(quote::quote! {
             #[gin(id = #id #proto_attributes)]
+            #default_attribute
+            #configured_attributes
             pub #field_name: #field_type,
         });
     }
 
     module.extend(quote::quote! {
-        #[derive(Clone, Debug, Message)]
+        #[derive(Clone, Debug, PartialEq, Message)]
         #attributes
+        #inferred_derives
         pub struct #name {
             #body
         }

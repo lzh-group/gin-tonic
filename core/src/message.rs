@@ -37,9 +37,10 @@ where
     where
         Self: Sized,
     {
-        let size = <u64 as Scalar<UInt64>>::decode(decoder)? as usize;
+        let size = usize::try_from(<u64 as Scalar<UInt64>>::decode(decoder)?)
+            .map_err(|_| ProtoError::UnexpectedEof)?;
 
-        <Self as Message>::decode_message(&mut decoder.sub_decoder(size))
+        <Self as Message>::decode_message(&mut decoder.sub_decoder(size)?)
     }
 }
 
@@ -225,7 +226,7 @@ mod test {
                 let d = Scalar::<crate::scalars::ProtoString>::decode(decoder)?;
                 decoder.decode_tag()?;
                 let mut e = vec![];
-                <Vec<i32> as Packed<Int32>>::decode(decoder, &mut e)?;
+                <Vec<i32> as Packed<Int32>>::decode(crate::Tag::from_parts(5, 2), decoder, &mut e)?;
                 Ok(Self { d, e })
             }
         }
@@ -304,5 +305,25 @@ mod test {
         let test6_de = Test6::decode_message(&mut decoder).unwrap();
 
         assert_eq!(test6, test6_de);
+    }
+}
+
+impl<T: Message> Message for Box<T> {
+    fn encode_message(&self, encoder: &mut impl Encode) {
+        (**self).encode_message(encoder);
+    }
+    fn decode_message(decoder: &mut impl Decode) -> Result<Self, ProtoError> {
+        T::decode_message(decoder).map(Box::new)
+    }
+}
+
+impl Message for () {
+    fn encode_message(&self, _encoder: &mut impl Encode) {}
+    fn decode_message(decoder: &mut impl Decode) -> Result<Self, ProtoError> {
+        while !decoder.eof() {
+            let tag = decoder.decode_tag()?;
+            decoder.skip_field(tag)?;
+        }
+        Ok(())
     }
 }

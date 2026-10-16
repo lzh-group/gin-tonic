@@ -2,6 +2,17 @@
 pub struct Tag(u32);
 
 impl Tag {
+    pub fn expect_wire_type(self, expected: u8) -> Result<(), crate::ProtoError> {
+        if self.wire_type() == expected {
+            Ok(())
+        } else {
+            Err(crate::ProtoError::UnexpectedWireType {
+                expected,
+                actual: self.wire_type(),
+            })
+        }
+    }
+
     #[inline]
     pub fn into_parts(self) -> (u32, u8) {
         (self.0 >> 3, (self.0 & 0b111) as u8)

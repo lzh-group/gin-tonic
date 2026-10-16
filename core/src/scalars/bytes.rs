@@ -11,7 +11,7 @@ impl Scalar<super::Bytes> for Vec<u8> {
     where
         Self: Sized,
     {
-        Ok(decoder.decode_bytes()?.to_vec())
+        decoder.decode_bytes()
     }
 }
 

@@ -27,17 +27,18 @@ where
     }
 
     #[inline]
-    #[allow(clippy::cast_possible_truncation)]
-    fn decode<'buf>(decoder: &mut impl Decode, v: &mut Self) -> Result<(), crate::ProtoError>
-    where
-        Self: Sized,
-    {
-        let size = decoder.decode_uint64()? as usize;
-        let end = decoder.position() + size;
-        while decoder.position() < end {
+    fn decode(tag: Tag, decoder: &mut impl Decode, v: &mut Self) -> Result<(), crate::ProtoError> {
+        if tag.wire_type() == WIRE_TYPE_LENGTH_ENCODED {
+            let size = usize::try_from(decoder.decode_uint64()?)
+                .map_err(|_| crate::ProtoError::UnexpectedEof)?;
+            let mut packed = decoder.sub_decoder(size)?;
+            while !packed.eof() {
+                v.push(Scalar::<ProtobufType>::decode(&mut packed)?);
+            }
+        } else {
+            tag.expect_wire_type(<RustType as Scalar<ProtobufType>>::WIRE_TYPE)?;
             v.push(Scalar::<ProtobufType>::decode(decoder)?);
         }
-
         Ok(())
     }
 }
@@ -66,9 +67,9 @@ mod test {
             assert_eq!(&expected_bytes[..size_hint], &buffer[..size_hint]);
 
             let mut decoder = Decoder::new(&buffer[..size_hint]);
-            decoder.decode_tag().unwrap();
+            let tag = decoder.decode_tag().unwrap();
             let mut deserialized = vec![];
-            <Vec<RustType> as Packed<ProtobufType>>::decode(&mut decoder, &mut deserialized)
+            <Vec<RustType> as Packed<ProtobufType>>::decode(tag, &mut decoder, &mut deserialized)
                 .unwrap();
 
             assert_eq!(data, &deserialized)
@@ -117,5 +118,47 @@ mod test {
         );
 
         inner::<bool, Bool>(&vec![true, false], b"\x0a\x02\x01\x00");
+    }
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+    use crate::{
+        ProtoError,
+        decoder::Decoder,
+        scalars::{Fixed32, UInt32},
+    };
+
+    #[test]
+    fn mixed_packed_and_unpacked_segments_append() {
+        let mut decoder = Decoder::new(&[8, 1, 10, 2, 2, 3, 8, 4]);
+        let mut values = Vec::<u32>::new();
+        while !decoder.eof() {
+            let tag = decoder.decode_tag().unwrap();
+            <Vec<u32> as Packed<UInt32>>::decode(tag, &mut decoder, &mut values).unwrap();
+        }
+        assert_eq!(values, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn truncated_packed_value_cannot_consume_following_field() {
+        let mut decoder = Decoder::new(&[1, 0x80, 8, 1]);
+        let mut values = Vec::<u32>::new();
+        assert!(
+            <Vec<u32> as Packed<UInt32>>::decode(Tag::from_parts(1, 2), &mut decoder, &mut values)
+                .is_err()
+        );
+        assert_eq!(decoder.decode_tag().unwrap(), Tag::from_parts(1, 0));
+        assert_eq!(decoder.decode_uint32().unwrap(), 1);
+        let mut decoder = Decoder::new(&[3, 1, 2, 3]);
+        assert!(matches!(
+            <Vec<u32> as Packed<Fixed32>>::decode(
+                Tag::from_parts(1, 2),
+                &mut decoder,
+                &mut Vec::new()
+            ),
+            Err(ProtoError::UnexpectedEof)
+        ));
     }
 }

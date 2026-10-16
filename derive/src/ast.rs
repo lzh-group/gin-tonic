@@ -24,6 +24,7 @@ pub(crate) struct MessageField {
 
     pub(crate) id: LitInt,
     pub(crate) oneof: Flag,
+    pub(crate) default: Flag,
     pub(crate) packed: Option<LitBool>,
     pub(crate) scalar: Option<Scalar>,
     pub(crate) key_scalar: Option<Scalar>,
@@ -178,7 +179,7 @@ impl IsMap for syn::Type {
                 // Get the last segment (e.g., 'HashMap' in 'std::option::Option')
                 let segment: &PathSegment = type_path.path.segments.last()?;
 
-                if segment.ident != "FxHashMap" {
+                if segment.ident != "FxHashMap" && segment.ident != "BTreeMap" {
                     return None;
                 }
 

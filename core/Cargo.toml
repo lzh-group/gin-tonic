@@ -18,7 +18,6 @@ fxhash = { workspace = true }
 secrecy = { workspace = true, optional = true }
 thiserror = { workspace = true }
 uuid = { workspace = true, optional = true }
-varint-simd = { workspace = true }
 
 [dev-dependencies]
 hex = { workspace = true }

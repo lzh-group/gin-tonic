@@ -1,0 +1,32 @@
+syntax = "proto3";
+package fixture.v1;
+
+enum State {
+  STATE_UNSPECIFIED = 0;
+  STATE_READY = 7;
+}
+message Child { int32 count = 1; }
+message Values {
+  Child required_child = 1;
+  optional Child optional_child = 2;
+  State state = 3;
+  bool enabled = 4;
+  bytes data = 5;
+  repeated bytes chunks = 6;
+  map<string, int32> counts = 7;
+  repeated State states = 8;
+  optional bool switch = 9;
+}
+message Mixed {
+  uint32 sequence = 1;
+  oneof content {
+    string text = 2;
+    Child record = 3;
+  }
+}
+message Choice {
+  oneof content {
+    double score = 1;
+    Child record = 2;
+  }
+}

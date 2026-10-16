@@ -63,7 +63,9 @@ impl Module {
                     .iter()
                     .map(|child| {
                         let name = quote::format_ident!("{}", child.name);
+                        let path = format!("{}/{}.rs", self.name, child.name);
                         syn::parse_quote! {
+                            #[path = #path]
                             pub mod #name;
                         }
                     })

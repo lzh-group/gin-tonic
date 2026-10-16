@@ -74,9 +74,9 @@ pub trait Decode {
     fn buffer(&self) -> &[u8];
     fn len(&self) -> usize;
     fn position(&self) -> usize;
-    fn advance(&mut self, size: usize);
+    fn advance(&mut self, size: usize) -> Result<(), ProtoError>;
     fn eof(&self) -> bool;
-    fn sub_decoder(&mut self, size: usize) -> impl Decode;
+    fn sub_decoder(&mut self, size: usize) -> Result<impl Decode, ProtoError>;
 
     #[inline]
     fn decode_int32(&mut self) -> Result<i32, ProtoError> {
@@ -115,7 +115,46 @@ pub trait Decode {
 
     #[inline]
     fn decode_tag(&mut self) -> Result<Tag, ProtoError> {
-        Ok(Tag::from(self.decode_uint32()?))
+        let raw = self.decode_uint64()?;
+        let tag = u32::try_from(raw)
+            .map(Tag::from)
+            .map_err(|_| ProtoError::InvalidTag(raw))?;
+        if tag.field_number() == 0 || tag.wire_type() > 5 {
+            return Err(ProtoError::InvalidTag(raw));
+        }
+        Ok(tag)
+    }
+
+    /// Skip a field without interpreting its value. Unknown groups are matched iteratively.
+    fn skip_field(&mut self, tag: Tag) -> Result<(), ProtoError> {
+        match tag.wire_type() {
+            0 => {
+                self.decode_uint64()?;
+            }
+            1 => self.advance(8)?,
+            2 => {
+                let size = usize::try_from(self.decode_uint64()?)
+                    .map_err(|_| ProtoError::UnexpectedEof)?;
+                self.advance(size)?;
+            }
+            3 => {
+                let mut groups = vec![tag.field_number()];
+                while let Some(expected) = groups.last().copied() {
+                    let next = self.decode_tag()?;
+                    match next.wire_type() {
+                        3 => groups.push(next.field_number()),
+                        4 if next.field_number() == expected => {
+                            groups.pop();
+                        }
+                        4 => return Err(ProtoError::InvalidTag(u64::from(u32::from(next)))),
+                        _ => self.skip_field(next)?,
+                    }
+                }
+            }
+            5 => self.advance(4)?,
+            _ => return Err(ProtoError::InvalidTag(u64::from(u32::from(tag)))),
+        }
+        Ok(())
     }
 }
 
@@ -146,7 +185,7 @@ pub trait Packed<ProtobufType> {
 
     fn encode(&self, field_number: u32, encoder: &mut impl Encode);
 
-    fn decode(decoder: &mut impl Decode, v: &mut Self) -> Result<(), ProtoError>
+    fn decode(tag: Tag, decoder: &mut impl Decode, v: &mut Self) -> Result<(), ProtoError>
     where
         Self: Sized;
 }

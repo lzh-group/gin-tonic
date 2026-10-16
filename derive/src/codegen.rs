@@ -4,7 +4,7 @@ use quote::{format_ident, quote, quote_spanned};
 use syn::Ident;
 
 use crate::ast::{
-    IsMap, IsOption, IsPackable, IsRepeated, MessageDeriveData, MessageField, ScalarToken,
+    IsMap, IsOption, IsPackable, IsRepeated, MessageDeriveData, MessageField, Scalar, ScalarToken,
 };
 
 pub(crate) fn expand_message(
@@ -64,12 +64,12 @@ fn expand_struct_message(
                 self.#field_ident.encode_message(encoder);
             });
 
-            oneof_match = quote_spanned! { span=>
+            oneof_match.extend(quote_spanned! { span=>
                 if #ty::matches_tag(tag) {
                     self.#field_ident = Some(#ty::decode_field(tag, decoder)?);
                     return Ok(());
                 }
-            };
+            });
         } else if let Some(inner) = ty.is_option() {
             let scalar_ty = match field.scalar {
                 Some(scalar) => scalar.scalar_token(root),
@@ -89,7 +89,10 @@ fn expand_struct_message(
                 #field_ident,
             });
             decode_field.extend(quote_spanned! { span=>
-                #id => self.#field_ident = Some(<#inner as Scalar::<#scalar_ty>>::decode(decoder)?),
+                #id => {
+                    tag.expect_wire_type(<#inner as Scalar<#scalar_ty>>::WIRE_TYPE)?;
+                    self.#field_ident = Some(<#inner as Scalar::<#scalar_ty>>::decode(decoder)?);
+                },
             });
 
             encode_impl.extend(quote_spanned! { span=>
@@ -97,7 +100,10 @@ fn expand_struct_message(
                     <#inner as Scalar::<#scalar_ty>>::encode_field(value, #id, encoder);
                 }
             });
-        } else if let Some(inner) = ty.is_repeated() {
+        } else if let Some(inner) = ty.is_repeated().filter(|inner| {
+            !matches!(field.scalar, Some(Scalar::Bytes))
+                || !matches!(inner, syn::Type::Path(path) if path.path.is_ident("u8"))
+        }) {
             let (scalar_ty, packed) = match field.scalar {
                 Some(scalar) => {
                     let is_packable = scalar.is_packable();
@@ -137,18 +143,21 @@ fn expand_struct_message(
                     <Vec<#inner> as #root::Packed::<#scalar_ty>>::encode(&self.#field_ident, #id, encoder);
                 });
                 decode_field.extend(quote_spanned! { span=>
-                    #id => <Vec<#inner> as #root::Packed<#scalar_ty>>::decode(decoder, &mut self.#field_ident)?,
+                    #id => <Vec<#inner> as #root::Packed<#scalar_ty>>::decode(tag, decoder, &mut self.#field_ident)?,
                 });
             } else {
                 encode_impl.extend(quote_spanned! { span=>
                     <Vec<#inner> as #root::Unpacked::<#scalar_ty>>::encode(
                         &self.#field_ident,
-                        #root::Tag::from_parts(#id, #root::WIRE_TYPE_LENGTH_ENCODED),
+                        #root::Tag::from_parts(#id, <#inner as #root::Scalar<#scalar_ty>>::WIRE_TYPE),
                         encoder,
                     );
                 });
                 decode_field.extend(quote_spanned! { span=>
-                    #id => self.#field_ident.push(<#inner as #root::Scalar<#scalar_ty>>::decode(decoder)?),
+                    #id => {
+                    tag.expect_wire_type(<#inner as #root::Scalar<#scalar_ty>>::WIRE_TYPE)?;
+                    self.#field_ident.push(<#inner as #root::Scalar<#scalar_ty>>::decode(decoder)?);
+                },
                 });
             }
         } else if let Some((key_ty, value_ty)) = ty.is_map() {
@@ -165,7 +174,7 @@ fn expand_struct_message(
                 #field_ident: #ty,
             });
             builder_new.extend(quote_spanned! { span=>
-                #field_ident: #root::fxhash::FxHashMap::with_capacity_and_hasher(8, Default::default()),
+                #field_ident: Default::default(),
             });
             builder_destructuring.extend(quote_spanned! { span=>
                 #field_ident,
@@ -174,7 +183,10 @@ fn expand_struct_message(
                 #field_ident,
             });
             decode_field.extend(quote_spanned! { span=>
-                #id => #root::Map::<#key_scalar_ty, #value_scalar_ty>::decode(decoder, &mut self.#field_ident)?,
+                #id => {
+                    tag.expect_wire_type(#root::WIRE_TYPE_LENGTH_ENCODED)?;
+                    #root::Map::<#key_scalar_ty, #value_scalar_ty>::decode(decoder, &mut self.#field_ident)?;
+                },
             });
 
             encode_impl.extend(quote_spanned! { span=>
@@ -195,11 +207,19 @@ fn expand_struct_message(
             builder_destructuring.extend(quote_spanned! { span=>
                 #field_ident,
             });
+            let finish = if field.default.is_present() {
+                quote!(#field_ident.unwrap_or_default())
+            } else {
+                quote!(#field_ident.ok_or(#root::ProtoError::MissingField(#id))?)
+            };
             finish_field.extend(quote_spanned! { span=>
-                #field_ident: #field_ident.ok_or(#root::gin_tonic_core::ProtoError::MissingField(#id))?,
+                #field_ident: #finish,
             });
             decode_field.extend(quote_spanned! { span=>
-                #id => self.#field_ident = Some(Scalar::<#scalar_ty>::decode(decoder)?),
+                #id => {
+                    tag.expect_wire_type(<#ty as Scalar<#scalar_ty>>::WIRE_TYPE)?;
+                    self.#field_ident = Some(Scalar::<#scalar_ty>::decode(decoder)?);
+                },
             });
 
             encode_impl.extend(quote_spanned! { span=>
@@ -270,7 +290,7 @@ fn expand_struct_message(
 
                 match tag.field_number() {
                     #decode_field
-                    _ => {}
+                    _ => decoder.skip_field(tag)?,
                 }
                 Ok(())
             }
@@ -302,7 +322,7 @@ pub(crate) fn expand_enumeration(
         };
 
         encode_impl.extend(quote_spanned! {span=>
-            Self::#var_ident => #id,
+            #ty::#var_ident => #id,
         });
 
         decode_impl.extend(quote_spanned! {span=>
@@ -311,6 +331,24 @@ pub(crate) fn expand_enumeration(
     }
 
     quote_spanned! {span=>
+        #[automatically_derived]
+        impl ::core::convert::TryFrom<i32> for #ty {
+            type Error = #root::ProtoError;
+            fn try_from(value: i32) -> Result<Self, Self::Error> {
+                match value {
+                    #decode_impl
+                    n => Err(#root::ProtoError::UnknownEnumVariant(n)),
+                }
+            }
+        }
+        #[automatically_derived]
+        impl ::core::convert::From<#ty> for i32 {
+            fn from(value: #ty) -> i32 {
+                // Reuse the scalar encoder's variant mapping without requiring repr(i32).
+                let value = &value;
+                match value { #encode_impl }
+            }
+        }
         #[automatically_derived]
         #[allow(unused_imports)]
         impl #root::PackableMarker<#root::scalars::Int32> for #ty {}
@@ -384,7 +422,10 @@ pub(crate) fn one_of_enumeration(
         });
 
         decode_impl.extend(quote_spanned! {span=>
-            #id => return Ok(Self::#var_ident(<#field_ty as Scalar<#scalar_ty>>::decode(decoder)?)),
+            #id => {
+                tag.expect_wire_type(<#field_ty as #root::Scalar<#scalar_ty>>::WIRE_TYPE)?;
+                return Ok(Self::#var_ident(<#field_ty as #root::Scalar<#scalar_ty>>::decode(decoder)?));
+            },
         });
     }
 
@@ -411,7 +452,11 @@ pub(crate) fn one_of_enumeration(
                 while !decoder.eof() {
                     let tag = decoder.decode_tag()?;
 
-                    slf = Some(Self::decode_field(tag, decoder)?);
+                    if Self::matches_tag(tag) {
+                        slf = Some(Self::decode_field(tag, decoder)?);
+                    } else {
+                        decoder.skip_field(tag)?;
+                    }
                 }
 
                 slf.ok_or(#root::ProtoError::MissingOneOf(&[#ids]))
@@ -421,12 +466,12 @@ pub(crate) fn one_of_enumeration(
         #[allow(unused_imports)]
         impl #ty {
             #[allow(unused)]
-            fn matches_tag(tag: #root::Tag,)  -> bool {
+            pub fn matches_tag(tag: #root::Tag,)  -> bool {
                 [#ids].contains(&tag.field_number())
             }
 
             #[inline]
-            fn decode_field(
+            pub fn decode_field(
                 tag: #root::Tag,
                 decoder: &mut impl #root::Decode,
             ) -> Result<Self, #root::ProtoError> {

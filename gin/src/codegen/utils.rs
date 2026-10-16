@@ -207,13 +207,13 @@ pub fn proto_attribute(field: &FieldDescriptor) -> TokenStream {
 
             match (key_resolved, value_resolved) {
                 (Some(key), Some(value)) => quote! {
-                    , scalar_key = #key, scalar_value = #value
+                    , key_scalar = #key, value_scalar = #value
                 },
                 (Some(key), None) => quote! {
-                    , scalar_key = #key
+                    , key_scalar = #key
                 },
                 (None, Some(value)) => quote! {
-                    , scalar_value = #value
+                    , value_scalar = #value
                 },
                 (None, None) => quote! {},
             }
@@ -256,8 +256,10 @@ pub fn field_type(ctx: &Generator, enclosed_type: &str, field: &FieldDescriptor)
             if cardinality == Cardinality::Repeated && ty.is_map_entry() {
                 let key_ty = field_type(ctx, enclosed_type, &ty.map_entry_key_field());
                 let value_ty = field_type(ctx, enclosed_type, &ty.map_entry_value_field());
-                return quote::quote! {
-                    gin_tonic::fxhash::FxHashMap<#key_ty, #value_ty>
+                return if ctx.is_btree_map(field.full_name()) {
+                    quote!(::std::collections::BTreeMap<#key_ty, #value_ty>)
+                } else {
+                    quote!(::gin_tonic::fxhash::FxHashMap<#key_ty, #value_ty>)
                 };
             } else {
                 resolve_message(ctx, enclosed_type, ty.full_name())
@@ -266,6 +268,11 @@ pub fn field_type(ctx: &Generator, enclosed_type: &str, field: &FieldDescriptor)
         Kind::Enum(ty) => resolve_message(ctx, enclosed_type, ty.full_name()),
     };
 
+    let field_type = if is_boxed(ctx, field) {
+        quote!(::std::boxed::Box<#field_type>)
+    } else {
+        field_type
+    };
     let optional = field.field_descriptor_proto().proto3_optional();
     if optional {
         quote::quote! {
@@ -284,6 +291,9 @@ pub fn field_type(ctx: &Generator, enclosed_type: &str, field: &FieldDescriptor)
 pub(crate) fn match_name(pattern: &str, path: &str) -> bool {
     // @HACK jeremy.barrow - 19 Jan 2024: Just a stupid hack for now.
     let path = format!(".{}", path);
+    if pattern.is_empty() {
+        return false;
+    }
     if pattern == "." || pattern == path {
         true
     } else {
@@ -318,4 +328,72 @@ pub fn manifests(path: &std::path::Path) -> impl Iterator<Item = std::path::Path
         let manifest = path.join(CARGO_TOML);
         manifest.exists().then_some(manifest)
     })
+}
+
+/// Infer derives from the actual generated field shapes. Oneofs have no default
+/// selection; strings and containers cannot be Copy. Cycles are conservative.
+pub(crate) fn message_derives(
+    ctx: &Generator,
+    ty: &protox::prost_reflect::MessageDescriptor,
+) -> TokenStream {
+    fn capable(
+        ctx: &Generator,
+        ty: &protox::prost_reflect::MessageDescriptor,
+        copy: bool,
+        visiting: &mut std::collections::HashSet<String>,
+    ) -> bool {
+        if !visiting.insert(ty.full_name().to_owned()) {
+            return false;
+        }
+        let result = ty.fields().all(|field| {
+            if super::one_of::fetch_one_of(&field).is_some() {
+                return false;
+            }
+            if !copy
+                && (field.is_list()
+                    || field.is_map()
+                    || field.field_descriptor_proto().proto3_optional())
+            {
+                return true;
+            }
+            if copy && (field.is_list() || field.is_map() || is_boxed(ctx, &field)) {
+                return false;
+            }
+            if ext_ref(field.parent_pool(), RUST_TYPE, &field.options()).is_some() {
+                return false;
+            }
+            match field.kind() {
+                Kind::String | Kind::Bytes => !copy,
+                Kind::Enum(_) => true,
+                Kind::Message(child) => {
+                    if ctx.is_custom_external(child.full_name()) {
+                        return false;
+                    }
+                    capable(ctx, &child, copy, visiting)
+                }
+                _ => true,
+            }
+        });
+        visiting.remove(ty.full_name());
+        result
+    }
+    let defaults =
+        capable(ctx, ty, false, &mut Default::default()).then(|| quote!(#[derive(Default)]));
+    let copies = capable(ctx, ty, true, &mut Default::default()).then(|| quote!(#[derive(Copy)]));
+    quote!(#defaults #copies)
+}
+
+pub(crate) fn is_boxed(ctx: &Generator, field: &FieldDescriptor) -> bool {
+    ctx.is_boxed(field.full_name())
+        || field
+            .containing_oneof()
+            .is_some_and(|oneof| ctx.is_boxed(&format!("{}.{}", oneof.full_name(), field.name())))
+}
+
+pub(crate) fn configured_field_attributes(ctx: &Generator, field: &FieldDescriptor) -> TokenStream {
+    let mut attributes = ctx.field_attributes(field.full_name());
+    if let Some(oneof) = field.containing_oneof() {
+        attributes.extend(ctx.field_attributes(&format!("{}.{}", oneof.full_name(), field.name())));
+    }
+    attributes
 }

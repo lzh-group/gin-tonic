@@ -321,6 +321,7 @@ dependencies = [
 name = "gin-tonic"
 version = "0.8.9"
 dependencies = [
+ "bytes",
  "criterion",
  "gin-tonic-core",
  "gin-tonic-derive",
@@ -348,7 +349,6 @@ dependencies = [
  "secrecy",
  "thiserror",
  "uuid",
- "varint-simd",
 ]
 
 [[package]]
@@ -1126,15 +1126,6 @@ dependencies = [
  "getrandom",
  "js-sys",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "varint-simd"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "655d0cf8bfc2bd1f079e767f7ff613cbfa0ef06ca3ceaf1fd6b6cde08cbd012a"
-dependencies = [
- "rustc_version",
 ]
 
 [[package]]

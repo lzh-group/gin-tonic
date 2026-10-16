@@ -5,13 +5,18 @@ use crate::CompilerError;
 use crate::codegen::case::{Case, convert};
 use crate::codegen::external_type::ExternalType;
 use crate::codegen::module::Module;
-use crate::codegen::{enums, external_type, messages, service, utils};
+#[cfg(feature = "tonic")]
+use crate::codegen::service;
+use crate::codegen::{enums, external_type, messages, utils};
 
 pub struct Generator {
     well_known_types: bool,
     external_types: Vec<ExternalType>,
     type_filter: Box<dyn for<'a> Fn(&'a str) -> bool>,
     type_attributes: Vec<(String, String)>,
+    field_attributes: Vec<(String, String)>,
+    btree_maps: Vec<String>,
+    boxed_fields: Vec<String>,
 
     #[cfg(feature = "tonic")]
     generate_services: bool,
@@ -37,6 +42,9 @@ impl Generator {
             external_types: vec![],
             type_filter: Box::new(filter),
             type_attributes: vec![],
+            field_attributes: vec![],
+            btree_maps: vec![],
+            boxed_fields: vec![],
 
             #[cfg(feature = "tonic")]
             generate_services: true,
@@ -147,20 +155,68 @@ impl Generator {
     }
 
     pub(crate) fn attributes(&self, name: &str) -> TokenStream {
-        for (pattern, attributes) in self.type_attributes.iter() {
+        Self::matching_attributes(&self.type_attributes, name)
+    }
+
+    pub(crate) fn field_attributes(&self, name: &str) -> TokenStream {
+        Self::matching_attributes(&self.field_attributes, name)
+    }
+
+    fn matching_attributes(attributes: &[(String, String)], name: &str) -> TokenStream {
+        let mut result = TokenStream::new();
+        for (pattern, attribute) in attributes {
             if utils::match_name(pattern, name) {
                 let attrs =
-                    syn::parse_str::<syn::DeriveInput>(&format!("{}\nstruct fake;", attributes))
-                        .expect("Hardcoded struct should always be correct.")
+                    syn::parse_str::<syn::DeriveInput>(&format!("{attribute}\nstruct fake;"))
+                        .expect("invalid configured attribute")
                         .attrs;
-
-                return quote::quote!(
-                    #(#attrs)*
-                );
+                result.extend(quote::quote!(#(#attrs)*));
             }
         }
+        result
+    }
 
-        quote::quote!()
+    pub fn field_attribute(&mut self, pattern: impl Into<String>, attribute: impl Into<String>) {
+        self.field_attributes
+            .push((pattern.into(), attribute.into()));
+    }
+
+    pub fn extern_path(&mut self, proto: impl Into<String>, rust: impl Into<String>) {
+        let proto = proto.into();
+        self.external_types.push(ExternalType {
+            proto_path: if proto.starts_with('.') {
+                proto
+            } else {
+                format!(".{proto}")
+            },
+            rust_path: rust.into(),
+        });
+    }
+
+    pub fn btree_map(&mut self, paths: impl IntoIterator<Item = impl Into<String>>) {
+        self.btree_maps.extend(paths.into_iter().map(Into::into));
+    }
+
+    pub fn boxed(&mut self, path: impl Into<String>) {
+        self.boxed_fields.push(path.into());
+    }
+
+    pub(crate) fn is_btree_map(&self, path: &str) -> bool {
+        self.btree_maps
+            .iter()
+            .any(|pattern| utils::match_name(pattern, path))
+    }
+
+    pub(crate) fn is_boxed(&self, path: &str) -> bool {
+        self.boxed_fields
+            .iter()
+            .any(|pattern| utils::match_name(pattern, path))
+    }
+
+    pub(crate) fn is_custom_external(&self, identifier: &str) -> bool {
+        self.external_types
+            .iter()
+            .any(|item| item.proto_path == format!(".{identifier}"))
     }
 
     pub(crate) fn resolve_ident(&self, identifier: &str) -> Option<String> {
@@ -187,30 +243,16 @@ impl Generator {
                 continue;
             };
 
-            let mut segments = type_name.split('.');
-            let ident_type = segments
-                .next_back()
-                .map(|item| convert(item, Case::Pascal).to_string());
-
-            let type_path = path.rust_path.clone();
-
-            let segments = type_path
-                .split("::")
-                .chain(segments)
-                .enumerate()
-                .map(|(idx, segment)| {
-                    if idx == 0 && segment == "crate" {
-                        // If the first segment of the path is 'crate', then do not escape
-                        // it into a raw identifier, since it's being used as the keyword.
-                        segment.to_owned()
-                    } else {
-                        convert(segment, Case::Snake).to_string()
-                    }
-                })
-                .chain(ident_type)
-                .collect::<Vec<_>>();
-
-            return Some(segments.join("::"));
+            let mut segments = type_name.split('.').collect::<Vec<_>>();
+            let last = segments.pop().expect("nonempty external type path");
+            let mut rust = path.rust_path.trim_end_matches("::").to_owned();
+            for segment in segments {
+                rust.push_str("::");
+                rust.push_str(&convert(segment, Case::Snake));
+            }
+            rust.push_str("::");
+            rust.push_str(&convert(last, Case::Pascal));
+            return Some(rust);
         }
 
         None

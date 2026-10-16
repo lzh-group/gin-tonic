@@ -33,30 +33,30 @@ impl<'buf> Encoder<'buf> {
 impl<'buf> Encode for Encoder<'buf> {
     #[inline]
     fn encode_sint32(&mut self, n: i32) {
-        let (data, size) = varint_simd::encode_zigzag(n);
-        self.buffer_mut()[0..size as usize].clone_from_slice(&data[0..size as usize]);
-        self.advance(size as usize);
+        let (data, size) = encode_varint(((n << 1) ^ (n >> 31)) as u32 as u64);
+        self.buffer_mut()[0..size].clone_from_slice(&data[0..size]);
+        self.advance(size);
     }
 
     #[inline]
     fn encode_sint64(&mut self, n: i64) {
-        let (data, size) = varint_simd::encode_zigzag(n);
-        self.buffer_mut()[0..size as usize].clone_from_slice(&data[0..size as usize]);
-        self.advance(size as usize);
+        let (data, size) = encode_varint(((n << 1) ^ (n >> 63)) as u64);
+        self.buffer_mut()[0..size].clone_from_slice(&data[0..size]);
+        self.advance(size);
     }
 
     #[inline]
     fn encode_uint32(&mut self, n: u32) {
-        let (data, size) = varint_simd::encode(n);
-        self.buffer_mut()[0..size as usize].clone_from_slice(&data[0..size as usize]);
-        self.advance(size as usize);
+        let (data, size) = encode_varint(u64::from(n));
+        self.buffer_mut()[0..size].clone_from_slice(&data[0..size]);
+        self.advance(size);
     }
 
     #[inline]
     fn encode_uint64(&mut self, n: u64) {
-        let (data, size) = varint_simd::encode(n);
-        self.buffer_mut()[0..size as usize].clone_from_slice(&data[0..size as usize]);
-        self.advance(size as usize);
+        let (data, size) = encode_varint(n);
+        self.buffer_mut()[0..size].clone_from_slice(&data[0..size]);
+        self.advance(size);
     }
 
     #[inline]
@@ -99,7 +99,7 @@ impl<'buf> Encode for Encoder<'buf> {
     fn encode_bytes(&mut self, b: &[u8]) {
         let len = b.len();
         #[allow(clippy::cast_possible_truncation)]
-        self.encode_int32(len as i32);
+        self.encode_uint64(len as u64);
         self.buffer_mut()[0..len].clone_from_slice(b);
         self.advance(len);
     }
@@ -120,26 +120,26 @@ impl SizeHint {
 impl Encode for SizeHint {
     #[inline]
     fn encode_sint32(&mut self, n: i32) {
-        let (_, size) = varint_simd::encode_zigzag(n);
-        self.size += size as usize;
+        let (_, size) = encode_varint(((n << 1) ^ (n >> 31)) as u32 as u64);
+        self.size += size;
     }
 
     #[inline]
     fn encode_sint64(&mut self, n: i64) {
-        let (_, size) = varint_simd::encode_zigzag(n);
-        self.size += size as usize;
+        let (_, size) = encode_varint(((n << 1) ^ (n >> 63)) as u64);
+        self.size += size;
     }
 
     #[inline]
     fn encode_uint32(&mut self, n: u32) {
-        let (_, size) = varint_simd::encode(n);
-        self.size += size as usize;
+        let (_, size) = encode_varint(u64::from(n));
+        self.size += size;
     }
 
     #[inline]
     fn encode_uint64(&mut self, n: u64) {
-        let (_, size) = varint_simd::encode(n);
-        self.size += size as usize;
+        let (_, size) = encode_varint(n);
+        self.size += size;
     }
 
     #[inline]
@@ -175,7 +175,83 @@ impl Encode for SizeHint {
     #[inline]
     fn encode_bytes(&mut self, b: &[u8]) {
         #[allow(clippy::cast_possible_truncation)]
-        self.encode_int32(b.len() as i32);
+        self.encode_uint64(b.len() as u64);
         self.size += b.len();
+    }
+}
+
+#[allow(clippy::cast_possible_truncation)] // Each step intentionally takes the low byte.
+fn encode_varint(mut value: u64) -> ([u8; 10], usize) {
+    let mut buffer = [0; 10];
+    let mut size = 0;
+    while value >= 0x80 {
+        buffer[size] = (value as u8) | 0x80;
+        value >>= 7;
+        size += 1;
+    }
+    buffer[size] = value as u8;
+    (buffer, size + 1)
+}
+
+// A growing encoder lets transports write safely without trusting a size hint.
+impl Encode for Vec<u8> {
+    fn encode_sint32(&mut self, n: i32) {
+        self.encode_uint32(((n << 1) ^ (n >> 31)) as u32);
+    }
+    fn encode_sint64(&mut self, n: i64) {
+        self.encode_uint64(((n << 1) ^ (n >> 63)) as u64);
+    }
+    fn encode_uint32(&mut self, n: u32) {
+        self.encode_uint64(u64::from(n));
+    }
+    fn encode_uint64(&mut self, n: u64) {
+        let (bytes, size) = encode_varint(n);
+        self.extend_from_slice(&bytes[..size]);
+    }
+    fn encode_sfixed32(&mut self, n: i32) {
+        self.extend_from_slice(&n.to_le_bytes());
+    }
+    fn encode_sfixed64(&mut self, n: i64) {
+        self.extend_from_slice(&n.to_le_bytes());
+    }
+    fn encode_fixed32(&mut self, n: u32) {
+        self.extend_from_slice(&n.to_le_bytes());
+    }
+    fn encode_fixed64(&mut self, n: u64) {
+        self.extend_from_slice(&n.to_le_bytes());
+    }
+    fn encode_float(&mut self, n: f32) {
+        self.extend_from_slice(&n.to_le_bytes());
+    }
+    fn encode_double(&mut self, n: f64) {
+        self.extend_from_slice(&n.to_le_bytes());
+    }
+    fn encode_bytes(&mut self, bytes: &[u8]) {
+        self.encode_uint64(bytes.len() as u64);
+        self.extend_from_slice(bytes);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Decode, decoder::Decoder};
+
+    #[test]
+    fn growing_encoder_handles_boundaries_and_large_bytes() {
+        let mut encoded = Vec::new();
+        for value in [0, 127, 128, u32::MAX as u64, u64::MAX] {
+            encoded.encode_uint64(value);
+        }
+        encoded.encode_sint64(i64::MIN);
+        let payload = vec![42; 64 * 1024];
+        encoded.encode_bytes(&payload);
+        let mut decoder = Decoder::new(&encoded);
+        for value in [0, 127, 128, u32::MAX as u64, u64::MAX] {
+            assert_eq!(decoder.decode_uint64().unwrap(), value);
+        }
+        assert_eq!(decoder.decode_sint64().unwrap(), i64::MIN);
+        assert_eq!(decoder.decode_bytes().unwrap(), payload);
+        assert!(decoder.eof());
     }
 }

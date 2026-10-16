@@ -62,6 +62,34 @@ impl CompileConfig {
         self
     }
 
+    /// Add an attribute to matching fields. All matching attributes accumulate.
+    pub fn field_attribute(
+        mut self,
+        path: impl Into<String>,
+        attribute: impl Into<String>,
+    ) -> Self {
+        self.ctx.field_attribute(path, attribute);
+        self
+    }
+
+    /// Resolve an external protobuf package or type to its Rust path.
+    pub fn extern_path(mut self, proto: impl Into<String>, rust: impl Into<String>) -> Self {
+        self.ctx.extern_path(proto, rust);
+        self
+    }
+
+    /// Generate matching protobuf maps as ordered maps.
+    pub fn btree_map(mut self, paths: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.ctx.btree_map(paths);
+        self
+    }
+
+    /// Box a matching message field or oneof variant.
+    pub fn boxed(mut self, path: impl Into<String>) -> Self {
+        self.ctx.boxed(path);
+        self
+    }
+
     /// Batch-adds an attribute to all patterns
     pub fn add_attributes(
         mut self,
@@ -250,3 +278,6 @@ impl protox::file::FileResolver for Resolver {
         Ok(file)
     }
 }
+
+#[cfg(test)]
+mod tests;

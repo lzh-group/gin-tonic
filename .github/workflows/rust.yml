@@ -1,23 +1,21 @@
 name: Rust
 
-on:
-  push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
+on: [push, pull_request]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Run tests [uuid_string]
-        run: cargo test --locked --features uuid_string
-      - name: Run tests [uuid_bytes]
-        run: cargo test --locked --features uuid_bytes
-      - name: Run clippy
-        run: cargo clippy --locked --workspace --all-targets --features uuid_bytes
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo +stable test --locked --workspace
+      - run: cargo +stable check --locked -p gin-tonic --no-default-features --features generator
+      - run: cargo +stable check --locked -p gin-tonic --no-default-features --features tonic
+      - run: cargo +stable fmt --all -- --check
+      - run: cargo +stable clippy --locked --workspace --lib
