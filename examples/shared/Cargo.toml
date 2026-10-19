@@ -1,6 +1,7 @@
 [workspace]
 
 [package]
+publish = false
 name = "shared"
 version = "0.1.0"
 edition = "2021"

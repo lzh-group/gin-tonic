@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "gin-tonic-derive"
 version = "0.8.9"
 edition = "2024"
