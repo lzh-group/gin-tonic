@@ -63,6 +63,12 @@ impl Message for Duration {
     }
 }
 
+impl crate::Validate for Duration {
+    fn validate(&self) -> Result<(), crate::ValidationError> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

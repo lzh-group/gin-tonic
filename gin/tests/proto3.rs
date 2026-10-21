@@ -133,3 +133,89 @@ fn mixed_and_standalone_oneofs_preserve_the_last_known_variant() {
     assert_eq!(decode::<Outcome>(&bytes).unwrap(), score);
     assert!(decode::<Values>(&[13, 0, 0, 0, 0]).is_err());
 }
+
+#[derive(Clone, Debug, PartialEq, OneOf)]
+enum Pick {
+    #[gin(id = 1, scalar = "double", validate(finite))]
+    LongScore(f64),
+    #[gin(id = 2, scalar = "bytes", name = "item", validate(nested))]
+    Record(Box<Limited>),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Message)]
+struct Limited {
+    #[gin(id = 1, scalar = "sint32", default, validate(gt = -1, lt = 3))]
+    level: i32,
+    #[gin(id = 2, validate(min_items = 1, items(max_len = 2)))]
+    tags: Vec<String>,
+    #[gin(
+        id = 3,
+        key_scalar = "int32",
+        value_scalar = "double",
+        validate(values(lte = 1.0))
+    )]
+    shares: BTreeMap<i32, f64>,
+}
+
+#[test]
+fn hand_written_messages_validate_through_attributes() {
+    use gin_tonic::Validate;
+
+    assert_eq!(Values::default().validate(), Ok(()));
+    assert_eq!(
+        Mixed {
+            id: 0,
+            outcome: Outcome::Record(Box::default())
+        }
+        .validate(),
+        Ok(())
+    );
+    let limited = Limited {
+        level: 2,
+        tags: vec!["ab".into()],
+        shares: [(1, 1.0)].into_iter().collect(),
+    };
+    assert_eq!(limited.validate(), Ok(()));
+    assert_eq!(
+        Pick::LongScore(f64::NAN)
+            .validate()
+            .unwrap_err()
+            .to_string(),
+        "field `long_score` must be finite"
+    );
+    let invalid = [
+        (
+            Limited {
+                level: 3,
+                ..limited.clone()
+            },
+            "field `item.level` must be < 3",
+        ),
+        (
+            Limited {
+                tags: vec![],
+                ..limited.clone()
+            },
+            "field `item.tags` must contain at least 1 item(s)",
+        ),
+        (
+            Limited {
+                tags: vec!["abc".into()],
+                ..limited.clone()
+            },
+            "field `item.tags[0]` must be at most 2 characters",
+        ),
+        (
+            Limited {
+                shares: [(-4, 1.5)].into_iter().collect(),
+                ..limited.clone()
+            },
+            "field `item.shares[-4]` must be <= 1",
+        ),
+    ];
+    for (value, expected) in invalid {
+        let value = Pick::Record(Box::new(value));
+        assert_eq!(value.validate().unwrap_err().to_string(), expected);
+        assert_eq!(decode::<Pick>(&encode(&value)).unwrap(), value);
+    }
+}

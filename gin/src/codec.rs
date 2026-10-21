@@ -3,7 +3,7 @@
 use std::marker::PhantomData;
 
 use bytes::{Buf, BufMut};
-use gin_tonic_core::{Message, decoder::Decoder};
+use gin_tonic_core::{Message, Validate, decoder::Decoder};
 use tonic::codec::{DecodeBuf, EncodeBuf};
 
 #[derive(Debug, Clone)]
@@ -30,7 +30,7 @@ pub struct GinDecoder<U> {
 impl<T, U> tonic::codec::Codec for GinCodec<T, U>
 where
     T: Message + Send + 'static + std::fmt::Debug,
-    U: Message + Send + 'static + std::fmt::Debug,
+    U: Message + Validate + Send + 'static + std::fmt::Debug,
 {
     type Encode = T;
     type Decode = U;
@@ -58,7 +58,7 @@ impl<T: Message + std::fmt::Debug> tonic::codec::Encoder for GinEncoder<T> {
     }
 }
 
-impl<U: Message + std::fmt::Debug> tonic::codec::Decoder for GinDecoder<U> {
+impl<U: Message + Validate + std::fmt::Debug> tonic::codec::Decoder for GinDecoder<U> {
     type Item = U;
     type Error = tonic::Status;
 
@@ -80,8 +80,13 @@ fn encode_payload<T: Message>(item: T) -> Vec<u8> {
     encoded
 }
 
-fn decode_payload<U: Message>(bytes: &[u8]) -> Result<U, tonic::Status> {
-    U::decode_message(&mut Decoder::new(bytes)).map_err(map_core_err)
+/// Decoded messages are validated against their protovalidate field rules.
+fn decode_payload<U: Message + Validate>(bytes: &[u8]) -> Result<U, tonic::Status> {
+    let decoded = U::decode_message(&mut Decoder::new(bytes)).map_err(map_core_err)?;
+    decoded
+        .validate()
+        .map_err(|error| tonic::Status::invalid_argument(error.to_string()))?;
+    Ok(decoded)
 }
 
 #[cfg(test)]
@@ -102,6 +107,27 @@ mod tests {
             decoder.decode_bytes().map(Self)
         }
     }
+    impl Validate for Payload {
+        fn validate(&self) -> Result<(), gin_tonic_core::ValidationError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, crate::Message)]
+    #[gin(root = "crate")]
+    struct Limits {
+        #[gin(id = 1, scalar = "int32", default, validate(gte = 1, lte = 10000))]
+        period: i32,
+        #[gin(id = 2, validate(nested))]
+        child: Child,
+    }
+
+    #[derive(Debug, crate::Message)]
+    #[gin(root = "crate")]
+    struct Child {
+        #[gin(id = 1, default, validate(min_len = 1))]
+        name: String,
+    }
 
     #[test]
     fn encoding_grows_without_trusting_the_size_hint() {
@@ -119,6 +145,37 @@ mod tests {
         assert_eq!(
             decode_payload::<Payload>(&[10, 1]).unwrap_err().code(),
             tonic::Code::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn decoded_messages_are_validated() {
+        let valid = Limits {
+            period: 10000,
+            child: Child { name: "x".into() },
+        };
+        let decoded = decode_payload::<Limits>(&encode_payload(valid)).unwrap();
+        assert_eq!(decoded.period, 10000);
+
+        let invalid = Limits {
+            period: 10001,
+            child: Child { name: "x".into() },
+        };
+        let status = decode_payload::<Limits>(&encode_payload(invalid)).unwrap_err();
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert_eq!(status.message(), "field `period` must be <= 10000");
+
+        let nested = Limits {
+            period: 1,
+            child: Child {
+                name: String::new(),
+            },
+        };
+        let status = decode_payload::<Limits>(&encode_payload(nested)).unwrap_err();
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert_eq!(
+            status.message(),
+            "field `child.name` must be at least 1 characters"
         );
     }
 }

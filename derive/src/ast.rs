@@ -29,6 +29,74 @@ pub(crate) struct MessageField {
     pub(crate) scalar: Option<Scalar>,
     pub(crate) key_scalar: Option<Scalar>,
     pub(crate) value_scalar: Option<Scalar>,
+    #[darling(default)]
+    pub(crate) validate: FieldRules,
+}
+
+/// Rules applied to a single scalar or string value (`#[gin(validate(gte = 1, max_len = 8))]`).
+#[derive(Clone, Debug, Default, FromMeta)]
+pub(crate) struct ValueRules {
+    pub(crate) gt: Option<syn::Expr>,
+    pub(crate) gte: Option<syn::Expr>,
+    pub(crate) lt: Option<syn::Expr>,
+    pub(crate) lte: Option<syn::Expr>,
+    pub(crate) finite: Flag,
+    pub(crate) min_len: Option<u64>,
+    pub(crate) max_len: Option<u64>,
+    pub(crate) uuid: Flag,
+}
+
+impl ValueRules {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.gt.is_none()
+            && self.gte.is_none()
+            && self.lt.is_none()
+            && self.lte.is_none()
+            && !self.finite.is_present()
+            && self.min_len.is_none()
+            && self.max_len.is_none()
+            && !self.uuid.is_present()
+    }
+}
+
+/// Field validation passed from the code generator. `nested` recurses into the message
+/// value(s) of the field: the value itself, repeated items or map values.
+#[derive(Clone, Debug, Default, FromMeta)]
+pub(crate) struct FieldRules {
+    #[darling(flatten)]
+    pub(crate) value: ValueRules,
+    pub(crate) nested: Flag,
+    pub(crate) min_items: Option<u64>,
+    pub(crate) max_items: Option<u64>,
+    pub(crate) unique: Flag,
+    pub(crate) items: Option<ValueRules>,
+    pub(crate) min_pairs: Option<u64>,
+    pub(crate) max_pairs: Option<u64>,
+    pub(crate) keys: Option<ValueRules>,
+    pub(crate) values: Option<ValueRules>,
+}
+
+impl FieldRules {
+    pub(crate) fn has_repeated_rules(&self) -> bool {
+        self.min_items.is_some()
+            || self.max_items.is_some()
+            || self.unique.is_present()
+            || self.items.is_some()
+    }
+
+    pub(crate) fn has_map_rules(&self) -> bool {
+        self.min_pairs.is_some()
+            || self.max_pairs.is_some()
+            || self.keys.is_some()
+            || self.values.is_some()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.value.is_empty()
+            && !self.nested.is_present()
+            && !self.has_repeated_rules()
+            && !self.has_map_rules()
+    }
 }
 
 #[derive(Clone, Copy, Debug, FromMeta)]
@@ -280,4 +348,8 @@ pub(crate) struct OneOfVariant {
 
     pub(crate) id: LitInt,
     pub(crate) scalar: Option<Scalar>,
+    /// protobuf field name used in validation paths, defaults to the snake case variant name
+    pub(crate) name: Option<String>,
+    #[darling(default)]
+    pub(crate) validate: FieldRules,
 }

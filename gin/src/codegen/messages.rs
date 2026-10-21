@@ -1,6 +1,7 @@
 use protox::prost_reflect::MessageDescriptor;
 
-use crate::codegen::{Generator, case, enums, module, one_of, utils};
+use crate::CompilerError;
+use crate::codegen::{Generator, case, enums, module, one_of, utils, validate};
 
 /// generate message
 pub(crate) fn generate(
@@ -8,24 +9,25 @@ pub(crate) fn generate(
     parent: &mut module::Module,
     module_path: &str,
     ty: MessageDescriptor,
-) {
+) -> Result<(), CompilerError> {
     if ty.is_map_entry() {
-        return;
+        return Ok(());
     }
 
     let qualified_name = ty.full_name();
 
     // external types are not generated
     if ctx.resolve_ident(qualified_name).is_some() {
-        return;
+        return Ok(());
     }
     if !ctx.filter(qualified_name) {
-        return;
+        return Ok(());
     }
 
+    validate::check_message(&ty)?;
+
     if let Some(one_of) = one_of::is_unwrappable_one_of(&ty) {
-        one_of::generate_unwrapped(ctx, parent, module_path, one_of);
-        return;
+        return one_of::generate_unwrapped(ctx, parent, module_path, one_of);
     }
 
     tracing::info!("generating message: {qualified_name}");
@@ -71,6 +73,7 @@ pub(crate) fn generate(
         let field_type = utils::field_type(ctx, qualified_name, &field);
         let proto_attributes = utils::proto_attribute(&field);
         let configured_attributes = utils::configured_field_attributes(ctx, &field);
+        let validate_attributes = validate::field_attribute(ctx, &field, false)?;
         let default_attribute = if !field.is_list()
             && !field.is_map()
             && !field.field_descriptor_proto().proto3_optional()
@@ -82,7 +85,7 @@ pub(crate) fn generate(
         };
 
         body.extend(quote::quote! {
-            #[gin(id = #id #proto_attributes)]
+            #[gin(id = #id #proto_attributes #validate_attributes)]
             #default_attribute
             #configured_attributes
             pub #field_name: #field_type,
@@ -105,10 +108,12 @@ pub(crate) fn generate(
             enums::generate(ctx, module, module_path, child);
         }
         for child in ty.child_messages() {
-            generate(ctx, module, module_path, child);
+            generate(ctx, module, module_path, child)?;
         }
         for one_of in ty.oneofs() {
-            one_of::generate(ctx, module, module_path, one_of);
+            one_of::generate(ctx, module, module_path, one_of)?;
         }
     }
+
+    Ok(())
 }

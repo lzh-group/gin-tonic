@@ -1,0 +1,96 @@
+syntax = "proto3";
+package fixture.validate.v1;
+
+import "buf/validate/validate.proto";
+import "gin.proto";
+import "shared.proto";
+
+enum Side {
+  SIDE_LONG = 0;
+  SIDE_SHORT = 1;
+}
+
+message Numbers {
+  int32 int32 = 1 [(buf.validate.field).int32 = {gte: -5, lte: 10}];
+  int64 int64 = 2 [(buf.validate.field).int64.gt = 0];
+  uint32 uint32 = 3 [(buf.validate.field).uint32.lt = 100];
+  // inverted range: outside of [5, 10]
+  uint64 uint64 = 4 [(buf.validate.field).uint64 = {gt: 10, lt: 5}];
+  sint32 sint32 = 5 [(buf.validate.field).sint32.gte = -1];
+  sint64 sint64 = 6 [(buf.validate.field).sint64.lte = 1];
+  fixed32 fixed32 = 7 [(buf.validate.field).fixed32.gte = 1];
+  fixed64 fixed64 = 8 [(buf.validate.field).fixed64.lt = 9];
+  sfixed32 sfixed32 = 9 [(buf.validate.field).sfixed32.gt = -10];
+  sfixed64 sfixed64 = 10 [(buf.validate.field).sfixed64 = {gte: -1, lt: 1}];
+  double ratio = 11 [(buf.validate.field).double = {finite: true, gt: 0, lte: 1}];
+  float weight = 12 [(buf.validate.field).float = {gte: -1.5, lt: inf}];
+  float scale = 13 [(buf.validate.field).float.finite = true];
+  optional double limit = 14 [(buf.validate.field).double.gte = 0];
+  Side side = 15;
+}
+
+message Text {
+  string name = 1 [(buf.validate.field).string = {min_len: 1, max_len: 4}];
+  string id = 2 [(buf.validate.field).string.uuid = true];
+  optional string note = 3 [(buf.validate.field).string.max_len = 3];
+}
+
+message Collections {
+  repeated string ids = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 3
+    unique: true
+    items: {string: {min_len: 2}}
+  }];
+  repeated double values = 2 [(buf.validate.field).repeated = {
+    unique: true
+    items: {double: {finite: true}}
+  }];
+  map<string, int32> lots = 3 [(buf.validate.field).map = {
+    min_pairs: 1
+    max_pairs: 2
+    keys: {string: {min_len: 2}}
+    values: {int32: {gt: 0}}
+  }];
+  repeated Ta tas = 4 [(buf.validate.field).repeated.max_items = 2];
+  map<uint32, Ta> ta_map = 5;
+  repeated int64 ranks = 6 [(buf.validate.field).repeated.unique = true];
+}
+
+message Ta {
+  int32 period = 1 [(buf.validate.field).int32 = {gte: 1, lte: 10000}];
+}
+
+message Rule {
+  Ta ta = 1;
+  optional Ta fallback = 2;
+}
+
+message Node {
+  int32 depth = 1 [(buf.validate.field).int32.lte = 3];
+  optional Node child = 2;
+}
+
+message Mixed {
+  uint32 sequence = 1;
+  oneof content {
+    string text = 2 [(buf.validate.field).string.min_len = 1];
+    Rule rule = 3;
+  }
+}
+
+message Choice {
+  oneof kind {
+    double score = 1 [(buf.validate.field).double.finite = true];
+    Ta ta = 2;
+    fixture.shared.v1.Remote remote = 3;
+  }
+}
+
+message Foreign {
+  fixture.shared.v1.Remote remote = 1;
+  repeated fixture.shared.v1.Remote remotes = 2;
+  map<string, fixture.shared.v1.Remote> by_code = 3;
+  fixture.shared.v1.Remote custom = 5 [(gin_tonic.v1.rust_type) = "crate::Custom"];
+  Choice choice = 6;
+}

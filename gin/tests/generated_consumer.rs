@@ -4,9 +4,47 @@
 #[test]
 fn generated_proto_compiles_and_runs_in_an_external_consumer()
 -> Result<(), Box<dyn std::error::Error>> {
+    run_consumer(
+        "generated-consumer",
+        &[
+            (
+                "sample.proto",
+                include_str!("fixtures/consumer/sample.proto"),
+            ),
+            ("build.rs", include_str!("fixtures/consumer/build.rs")),
+            ("lib.rs", include_str!("fixtures/consumer/lib.rs")),
+        ],
+    )
+}
+
+#[test]
+fn generated_validation_rules_run_in_an_external_consumer() -> Result<(), Box<dyn std::error::Error>>
+{
+    run_consumer(
+        "validation-consumer",
+        &[
+            (
+                "buf/validate/validate.proto",
+                include_str!("fixtures/validate/buf/validate/validate.proto"),
+            ),
+            (
+                "shared.proto",
+                include_str!("fixtures/validate/shared.proto"),
+            ),
+            (
+                "sample.proto",
+                include_str!("fixtures/validate/sample.proto"),
+            ),
+            ("build.rs", include_str!("fixtures/validate/build.rs")),
+            ("lib.rs", include_str!("fixtures/validate/lib.rs")),
+        ],
+    )
+}
+
+fn run_consumer(name: &str, files: &[(&str, &str)]) -> Result<(), Box<dyn std::error::Error>> {
     let crate_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let directory = std::env::temp_dir().join(format!(
-        "gin-generated-consumer-{}-{}",
+        "gin-{name}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -28,7 +66,7 @@ fn generated_proto_compiles_and_runs_in_an_external_consumer()
         format!(
             r#"
 [package]
-name = "generated-consumer"
+name = "{name}"
 version = "0.0.0"
 edition = "2024"
 [workspace]
@@ -43,15 +81,12 @@ gin-tonic = {{ path = "{path}", default-features = false, features = ["generator
 "#
         ),
     )?;
-    for (name, contents) in [
-        (
-            "sample.proto",
-            include_str!("fixtures/consumer/sample.proto"),
-        ),
-        ("build.rs", include_str!("fixtures/consumer/build.rs")),
-        ("lib.rs", include_str!("fixtures/consumer/lib.rs")),
-    ] {
-        std::fs::write(directory.join(name), contents)?;
+    for (path, contents) in files {
+        let path = directory.join(path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, contents)?;
     }
     let output =
         std::process::Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))

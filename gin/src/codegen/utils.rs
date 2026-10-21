@@ -383,6 +383,10 @@ pub(crate) fn message_derives(
     quote!(#defaults #copies)
 }
 
+pub(crate) fn has_rust_type(field: &FieldDescriptor) -> bool {
+    ext_ref(field.parent_pool(), RUST_TYPE, &field.options()).is_some()
+}
+
 pub(crate) fn is_boxed(ctx: &Generator, field: &FieldDescriptor) -> bool {
     ctx.is_boxed(field.full_name())
         || field

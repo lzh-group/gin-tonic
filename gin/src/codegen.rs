@@ -8,12 +8,14 @@ pub(crate) mod one_of;
 #[cfg(feature = "tonic")]
 pub(crate) mod service;
 pub(crate) mod utils;
+pub(crate) mod validate;
 
 use std::path::PathBuf;
 
 pub use ctx::Generator;
 use external_type::ExternalType;
 use protox::file::{ChainFileResolver, GoogleFileResolver, IncludeFileResolver};
+pub use validate::ValidationRuleError;
 
 /// [CompileConfig] transforming `*.proto` files into Rust code
 pub struct CompileConfig {
@@ -243,6 +245,8 @@ pub enum CompilerError {
     Protox(#[from] protox::Error),
     #[error(transparent)]
     Syn(#[from] syn::Error),
+    #[error(transparent)]
+    Validation(#[from] ValidationRuleError),
 }
 
 /// protox [protox::file::Resolver]

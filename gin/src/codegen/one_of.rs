@@ -1,25 +1,26 @@
 use protox::prost_reflect::{FieldDescriptor, MessageDescriptor, OneofDescriptor};
 
-use crate::codegen::{Generator, case, enums, messages, module, utils};
+use crate::CompilerError;
+use crate::codegen::{Generator, case, enums, messages, module, utils, validate};
 
 pub(crate) fn generate(
     ctx: &Generator,
     parent: &mut module::Module,
     module_path: &str,
     ty: OneofDescriptor,
-) {
+) -> Result<(), CompilerError> {
     let fields = ty
         .fields()
         .filter(|field| !field.field_descriptor_proto().proto3_optional())
         .collect::<Vec<_>>();
 
     if fields.is_empty() {
-        return;
+        return Ok(());
     }
 
     let qualified_name = ty.full_name();
     if !ctx.filter(qualified_name) {
-        return;
+        return Ok(());
     }
 
     tracing::info!("generating wrapped one of: {qualified_name}");
@@ -42,6 +43,7 @@ pub(crate) fn generate(
         let variant_type = utils::field_type(ctx, qualified_name, &variant);
         let proto_attributes = utils::proto_attribute(&variant);
         let configured_attributes = utils::configured_field_attributes(ctx, &variant);
+        let validate_attributes = validate::field_attribute(ctx, &variant, true)?;
 
         if utils::is_unit_type(&variant_type) {
             body.extend(quote::quote! {
@@ -50,7 +52,7 @@ pub(crate) fn generate(
         } else {
             body.extend(quote::quote! {
                 #configured_attributes
-                #[gin(id = #id #proto_attributes)]
+                #[gin(id = #id #proto_attributes #validate_attributes)]
                 #variant_name(#variant_type),
             });
         };
@@ -63,6 +65,8 @@ pub(crate) fn generate(
             #body
         }
     });
+
+    Ok(())
 }
 
 pub(crate) fn generate_unwrapped(
@@ -70,7 +74,7 @@ pub(crate) fn generate_unwrapped(
     parent: &mut module::Module,
     module_path: &str,
     ty: OneofDescriptor,
-) {
+) -> Result<(), CompilerError> {
     let parent_message = ty.parent_message();
     let qualified_name = parent_message.full_name();
 
@@ -93,6 +97,7 @@ pub(crate) fn generate_unwrapped(
         let variant_type = utils::field_type(ctx, qualified_name, &variant);
         let proto_attributes = utils::proto_attribute(&variant);
         let configured_attributes = utils::configured_field_attributes(ctx, &variant);
+        let validate_attributes = validate::field_attribute(ctx, &variant, true)?;
 
         if utils::is_unit_type(&variant_type) {
             body.extend(quote::quote! {
@@ -103,7 +108,7 @@ pub(crate) fn generate_unwrapped(
         } else {
             body.extend(quote::quote! {
                 #configured_attributes
-                #[gin(id = #id #proto_attributes)]
+                #[gin(id = #id #proto_attributes #validate_attributes)]
                 #variant_name(#variant_type),
             });
         }
@@ -131,9 +136,11 @@ pub(crate) fn generate_unwrapped(
             enums::generate(ctx, module, module_path, child);
         }
         for child in ty.child_messages() {
-            messages::generate(ctx, module, module_path, child);
+            messages::generate(ctx, module, module_path, child)?;
         }
     }
+
+    Ok(())
 }
 
 /// an unwrappable one of is a message (struct) containing only the oneof field. in this case

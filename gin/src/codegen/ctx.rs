@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use proc_macro2::TokenStream;
 use protox::prost_reflect::DescriptorPool;
 
@@ -7,7 +9,7 @@ use crate::codegen::external_type::ExternalType;
 use crate::codegen::module::Module;
 #[cfg(feature = "tonic")]
 use crate::codegen::service;
-use crate::codegen::{enums, external_type, messages, utils};
+use crate::codegen::{enums, external_type, messages, utils, validate};
 
 pub struct Generator {
     well_known_types: bool,
@@ -114,10 +116,11 @@ impl Generator {
         }
 
         let mut root = Module::new("<root>");
+        let files = generated_files(pool);
 
         for ty in pool.all_enums() {
             // only top level types here
-            if ty.parent_message().is_some() {
+            if ty.parent_message().is_some() || !files.contains(ty.parent_file().name()) {
                 continue;
             }
 
@@ -127,17 +130,20 @@ impl Generator {
 
         for ty in pool.all_messages() {
             // only top level types here
-            if ty.parent_message().is_some() {
+            if ty.parent_message().is_some() || !files.contains(ty.parent_file().name()) {
                 continue;
             }
 
             let module_path = String::from(ty.package_name());
-            messages::generate(&self, &mut root, &module_path, ty);
+            messages::generate(&self, &mut root, &module_path, ty)?;
         }
 
         #[cfg(feature = "tonic")]
         if self.generate_services {
             for svc in pool.services() {
+                if !files.contains(svc.parent_file().name()) {
+                    continue;
+                }
                 let module_path = String::from(svc.package_name());
                 service::generate(&mut root, &module_path, svc);
             }
@@ -213,6 +219,14 @@ impl Generator {
             .any(|pattern| utils::match_name(pattern, path))
     }
 
+    /// Well-known types map to Rust types that do not implement `Validate`.
+    pub(crate) fn is_well_known(&self, identifier: &str) -> bool {
+        self.well_known_types
+            && external_type::well_known_types()
+                .iter()
+                .any(|item| item.proto_path == format!(".{identifier}"))
+    }
+
     pub(crate) fn is_custom_external(&self, identifier: &str) -> bool {
         self.external_types
             .iter()
@@ -257,4 +271,31 @@ impl Generator {
 
         None
     }
+}
+
+/// Files reachable from the compiled files without passing through option-only packages
+/// (protovalidate, gin.proto), whose types and imports are not generated.
+fn generated_files(pool: &DescriptorPool) -> HashSet<String> {
+    let imported = pool
+        .files()
+        .flat_map(|file| {
+            file.dependencies()
+                .map(|dependency| dependency.name().to_owned())
+                .collect::<Vec<_>>()
+        })
+        .collect::<HashSet<_>>();
+    let mut pending = pool
+        .files()
+        .filter(|file| !imported.contains(file.name()))
+        .collect::<Vec<_>>();
+    let mut files = HashSet::new();
+    while let Some(file) = pending.pop() {
+        if validate::OPTION_PACKAGES.contains(&file.package_name())
+            || !files.insert(file.name().to_owned())
+        {
+            continue;
+        }
+        pending.extend(file.dependencies());
+    }
+    files
 }

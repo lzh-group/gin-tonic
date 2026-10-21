@@ -10,12 +10,12 @@ pub use codec::GinCodec;
 #[cfg(all(feature = "generator", feature = "internals"))]
 pub use codegen::Generator;
 #[cfg(feature = "generator")]
-pub use codegen::{CompileConfig, CompilerError};
+pub use codegen::{CompileConfig, CompilerError, ValidationRuleError};
 pub use gin_tonic_core;
 pub use gin_tonic_core::{
     Decode, Encode, Map, Message, PackableMarker, Packed, ProtoError, Scalar, Tag, Unpacked,
-    WIRE_TYPE_I32, WIRE_TYPE_I64, WIRE_TYPE_LENGTH_ENCODED, WIRE_TYPE_VARINT, decoder, encoder,
-    fxhash, scalars, types,
+    Validate, ValidationError, WIRE_TYPE_I32, WIRE_TYPE_I64, WIRE_TYPE_LENGTH_ENCODED,
+    WIRE_TYPE_VARINT, decoder, encoder, fxhash, scalars, types, validate,
 };
 #[cfg(feature = "derive")]
 pub use gin_tonic_derive;

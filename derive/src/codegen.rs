@@ -2,10 +2,12 @@ use darling::ast::Fields;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
 use syn::Ident;
+use syn::ext::IdentExt;
 
 use crate::ast::{
     IsMap, IsOption, IsPackable, IsRepeated, MessageDeriveData, MessageField, Scalar, ScalarToken,
 };
+use crate::validate::{Shape, field_checks, snake_case};
 
 pub(crate) fn expand_message(
     root: &proc_macro2::TokenStream,
@@ -35,6 +37,7 @@ fn expand_struct_message(
     let mut decode_field = TokenStream::new();
 
     let mut oneof_match = TokenStream::new();
+    let mut validate_impl = TokenStream::new();
 
     for field in fields {
         let id = field.id;
@@ -44,8 +47,24 @@ fn expand_struct_message(
             .clone()
             .expect("named struct fields have idents");
         let span = field_ident.span();
+        let field_name = field_ident.unraw().to_string();
+        let validate = |shape| {
+            field_checks(
+                root,
+                &field.validate,
+                shape,
+                quote!(&self.#field_ident),
+                &field_name,
+            )
+        };
 
         if field.oneof.is_present() {
+            validate_impl.extend(if field.validate.is_empty() {
+                // oneof variants carry their own rules and protobuf names
+                quote!(#root::Validate::validate(&self.#field_ident)?;)
+            } else {
+                quote_spanned! { span=> compile_error!("oneof rules belong on the variants"); }
+            });
             builder_fields.extend(quote_spanned! { span=>
                 #field_ident: Option<#ty>,
             });
@@ -71,6 +90,7 @@ fn expand_struct_message(
                 }
             });
         } else if let Some(inner) = ty.is_option() {
+            validate_impl.extend(validate(Shape::Optional));
             let scalar_ty = match field.scalar {
                 Some(scalar) => scalar.scalar_token(root),
                 None => inner.scalar_token(root),
@@ -104,6 +124,7 @@ fn expand_struct_message(
             !matches!(field.scalar, Some(Scalar::Bytes))
                 || !matches!(inner, syn::Type::Path(path) if path.path.is_ident("u8"))
         }) {
+            validate_impl.extend(validate(Shape::Repeated));
             let (scalar_ty, packed) = match field.scalar {
                 Some(scalar) => {
                     let is_packable = scalar.is_packable();
@@ -161,6 +182,7 @@ fn expand_struct_message(
                 });
             }
         } else if let Some((key_ty, value_ty)) = ty.is_map() {
+            validate_impl.extend(validate(Shape::Map));
             let key_scalar_ty = match field.key_scalar {
                 Some(scalar) => scalar.scalar_token(root),
                 None => key_ty.scalar_token(root),
@@ -193,6 +215,7 @@ fn expand_struct_message(
                 #root::Map::<#key_scalar_ty, #value_scalar_ty>::encode(&self.#field_ident, #id, encoder);
             });
         } else {
+            validate_impl.extend(validate(Shape::Single));
             let scalar_ty = match field.scalar {
                 Some(scalar) => scalar.scalar_token(root),
                 None => ty.scalar_token(root),
@@ -252,6 +275,14 @@ fn expand_struct_message(
                 }
 
                 builder.finish()
+            }
+        }
+
+        #[automatically_derived]
+        impl #root::Validate for #ty {
+            fn validate(&self) -> ::core::result::Result<(), #root::ValidationError> {
+                #validate_impl
+                Ok(())
             }
         }
 
@@ -399,6 +430,9 @@ pub(crate) fn one_of_enumeration(
     let mut encode_impl = TokenStream::new();
     let mut decode_impl = TokenStream::new();
     let mut ids = TokenStream::new();
+    let mut validate_impl = TokenStream::new();
+    let variant_count = variants.len();
+    let mut validated_variants = 0usize;
 
     for variant in variants.into_iter() {
         let Some(field_ty) = variant.fields.fields.first() else {
@@ -417,6 +451,20 @@ pub(crate) fn one_of_enumeration(
             #id,
         });
 
+        let name = variant
+            .name
+            .clone()
+            .unwrap_or_else(|| snake_case(&var_ident.unraw().to_string()));
+        let checks = field_checks(root, &variant.validate, Shape::Single, quote!(value), &name);
+        if !checks.is_empty() {
+            validated_variants += 1;
+            validate_impl.extend(quote! {
+                Self::#var_ident(value) => {
+                    #checks
+                }
+            });
+        }
+
         encode_impl.extend(quote_spanned! {span=>
             Self::#var_ident(value) => <#field_ty as #root::Scalar::<#scalar_ty>>::encode_field(value, #id, encoder),
         });
@@ -428,6 +476,21 @@ pub(crate) fn one_of_enumeration(
             },
         });
     }
+
+    let validate_impl = match validated_variants {
+        0 => TokenStream::new(),
+        count if count == variant_count => quote! {
+            match self {
+                #validate_impl
+            }
+        },
+        _ => quote! {
+            match self {
+                #validate_impl
+                _ => {}
+            }
+        },
+    };
 
     quote_spanned! {span=>
         #[automatically_derived]
@@ -483,6 +546,14 @@ pub(crate) fn one_of_enumeration(
                 }
 
                 Err(#root::ProtoError::MissingOneOf(&[#ids]))
+            }
+        }
+
+        #[automatically_derived]
+        impl #root::Validate for #ty {
+            fn validate(&self) -> ::core::result::Result<(), #root::ValidationError> {
+                #validate_impl
+                Ok(())
             }
         }
     }

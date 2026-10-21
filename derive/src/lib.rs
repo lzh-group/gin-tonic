@@ -2,6 +2,7 @@
 
 pub(crate) mod ast;
 pub(crate) mod codegen;
+pub(crate) mod validate;
 
 #[proc_macro_derive(Message, attributes(gin))]
 /// a macro to derive protobof messages

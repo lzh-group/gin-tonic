@@ -1,0 +1,8 @@
+syntax = "proto3";
+package fixture.shared.v1;
+
+import "buf/validate/validate.proto";
+
+message Remote {
+  string code = 1 [(buf.validate.field).string.min_len = 1];
+}
