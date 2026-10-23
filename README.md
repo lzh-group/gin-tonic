@@ -88,6 +88,61 @@ impl gin_tonic_core::Scalar<gin_tonic_core::scalars::ProtoString> for MyType {
 }
 ```
 
+## Rust codegen options
+
+Beyond `rust_type`, `gin.proto` carries the Rust shape of a schema so consumers do not have to
+spell out fully qualified type names in `add_attribute` calls. Import it and annotate:
+
+```protobuf
+import "gin.proto";
+
+// Defaults for every enum and message in this file.
+option (gin_tonic.v1.file) = { enum: { strum_case: CASE_SNAKE } };
+
+enum Exchange {
+  // Overrides the file default field by field.
+  option (gin_tonic.v1.enum) = { strum_case: CASE_UPPER, serde_case: CASE_UPPER };
+  EXCHANGE_CFFEX = 0;
+}
+
+message Config {
+  option (gin_tonic.v1.message) = { serde_default: true, deny_unknown_fields: true };
+  map<string, int32> counts = 1 [(gin_tonic.v1.field) = { btree_map: true }];
+  oneof outcome {
+    option (gin_tonic.v1.oneof) = { serde_case: CASE_SNAKE };
+    int32 done = 2;
+  }
+}
+```
+
+| Option | Applies to | Effect |
+| --- | --- | --- |
+| `file.enum` / `file.message` | file | Defaults for every enum or message declared in the file |
+| `enum.strum_case` | enum | Derives `strum::AsRefStr` and `strum::EnumString` with `serialize_all` |
+| `enum.serde_case` | enum | `serde(rename_all)` |
+| `message.serde_default` | message | `serde(default)` |
+| `message.deny_unknown_fields` | message | `serde(deny_unknown_fields)` |
+| `field.btree_map` | map field | Decodes into a `BTreeMap` instead of the default map |
+| `field.boxed` | field | Boxes the field to break a recursive type cycle |
+| `field.deserialize_with` | field | `serde(deserialize_with)` with the given Rust path |
+
+Rules resolve in two layers: the file default, overridden rule by rule by the rule set on the type.
+An explicit `false` on a message clears a `true` from the file default. File defaults do not cover
+oneofs, and a `oneof` inside a message only takes its own `(gin_tonic.v1.oneof)` rules, because
+serde treats its enum as a separate type. A message holding only a oneof is generated as that
+oneof's enum, so the message's rules apply to the enum as well; `serde_default` must then resolve
+to unset or `false`, since serde rejects `default` on enums. Field rules apply to oneof members
+too. The two `serde` container modifiers are emitted as one `#[serde(default, deny_unknown_fields)]`
+attribute.
+
+`Case` covers `CASE_LOWER`, `CASE_UPPER`, `CASE_PASCAL`, `CASE_CAMEL`, `CASE_SNAKE`,
+`CASE_SCREAMING_SNAKE` and `CASE_KEBAB`, mapping to the spellings `strum` and `serde` share.
+`CASE_UNSPECIFIED`, an unknown rule and a rule that does not fit the target all fail code
+generation with an error naming the type and rule: `btree_map` on a non-map field, `boxed` on a map
+field, either of them next to `rust_type`, a `deserialize_with` that is not a Rust path, or
+`serde_default` on a message holding only a oneof. The rules are a closed set: `gin.proto`
+declares no extension range, so they cannot be extended.
+
 ## Validation
 
 Import `buf/validate/validate.proto` (protovalidate, provided on the include path by the consumer) and annotate fields with `(buf.validate.field)`:

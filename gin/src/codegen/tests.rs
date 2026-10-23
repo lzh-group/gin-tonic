@@ -298,3 +298,313 @@ fn unsupported_validation_rules_fail_generation() {
         assert!(error.contains(expected), "{body}: {error}");
     }
 }
+
+/// Compile `body` as `check.proto` (importing `gin.proto`) and return every generated source,
+/// as types with children land in nested submodule files.
+fn compile_options_with(
+    name: &str,
+    body: &str,
+    configure: impl FnOnce(CompileConfig) -> CompileConfig,
+) -> (Result<(), super::CompilerError>, Vec<String>) {
+    let directory =
+        std::env::temp_dir().join(format!("gin-codegen-options-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let proto = directory.join("check.proto");
+    std::fs::write(
+        &proto,
+        format!(
+            r#"
+            syntax = "proto3";
+            package check.v1;
+            import "gin.proto";
+            {body}
+            "#
+        ),
+    )
+    .unwrap();
+    let output = directory.join("out");
+    let mut config = configure(CompileConfig::new().add_proto_file(&proto));
+    #[cfg(feature = "tonic")]
+    {
+        config = config.skip_services();
+    }
+    let result = config.compile_into(&output);
+    let files = generated_files(&output.join("check"));
+    let generated_options = output.join("gin").exists();
+    std::fs::remove_dir_all(directory).unwrap();
+    assert!(!generated_options, "option packages must not be generated");
+    (result, files)
+}
+
+fn compile_options_files(
+    name: &str,
+    body: &str,
+) -> (Result<(), super::CompilerError>, Vec<String>) {
+    compile_options_with(name, body, |config| config)
+}
+
+fn compile_options(name: &str, body: &str) -> (Result<(), super::CompilerError>, String) {
+    let (result, files) = compile_options_files(name, body);
+    (result, files.join("\n"))
+}
+
+fn generated_files(directory: &std::path::Path) -> Vec<String> {
+    let mut sources = vec![];
+    for entry in std::fs::read_dir(directory).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            sources.extend(generated_files(&path));
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            sources.push(std::fs::read_to_string(&path).unwrap_or_default());
+        }
+    }
+    sources
+}
+
+/// The attributes of the generated struct or enum named `name`, rendered as tokens.
+fn item_attributes(files: &[String], name: &str) -> String {
+    files
+        .iter()
+        .filter_map(|file| syn::parse_file(file).ok())
+        .flat_map(|file| file.items)
+        .find_map(|item| match item {
+            syn::Item::Enum(item) if item.ident == name => Some(item.attrs),
+            syn::Item::Struct(item) if item.ident == name => Some(item.attrs),
+            _ => None,
+        })
+        .map(|attrs| quote::quote!(#(#attrs)*).to_string())
+        .unwrap_or_else(|| panic!("`{name}` is not generated: {}", files.join("\n")))
+}
+
+#[test]
+fn enum_options_become_strum_and_serde_attributes() {
+    let (result, source) = compile_options(
+        "enum",
+        r#"
+        enum Exchange {
+            option (gin_tonic.v1.enum) = { strum_case: CASE_UPPER, serde_case: CASE_UPPER };
+            EXCHANGE_A = 0;
+        }
+        enum Side {
+            option (gin_tonic.v1.enum) = { serde_case: CASE_SNAKE };
+            SIDE_A = 0;
+        }
+        enum Plain { PLAIN_A = 0; }
+        "#,
+    );
+    result.unwrap();
+    assert!(
+        source.contains("#[derive(strum::AsRefStr, strum::EnumString)]"),
+        "{source}"
+    );
+    assert!(
+        source.contains("#[strum(serialize_all = \"UPPERCASE\")]"),
+        "{source}"
+    );
+    assert!(
+        source.contains("#[serde(rename_all = \"UPPERCASE\")]"),
+        "{source}"
+    );
+    assert!(
+        source.contains("#[serde(rename_all = \"snake_case\")]"),
+        "{source}"
+    );
+    // An enum without rules keeps the generated defaults only.
+    let plain = source.split("pub enum Plain").nth(1).unwrap();
+    assert!(!plain.contains("strum"), "{source}");
+}
+
+#[test]
+fn file_options_are_defaults_overridden_by_the_type() {
+    let (result, files) = compile_options_files(
+        "file",
+        r#"
+        option (gin_tonic.v1.file) = {
+            enum: { strum_case: CASE_SNAKE }
+            message: { deny_unknown_fields: true }
+        };
+        enum Inherits { INHERITS_A = 0; }
+        enum Overrides {
+            option (gin_tonic.v1.enum) = { strum_case: CASE_PASCAL };
+            OVERRIDES_A = 0;
+        }
+        message Kept { int32 a = 1; }
+        message Wider {
+            option (gin_tonic.v1.message) = { serde_default: true };
+            int32 a = 1;
+        }
+        message Cleared {
+            option (gin_tonic.v1.message) = { deny_unknown_fields: false };
+            int32 a = 1;
+        }
+        "#,
+    );
+    result.unwrap();
+    let snake = quote::quote!(#[strum(serialize_all = "snake_case")]).to_string();
+    let pascal = quote::quote!(#[strum(serialize_all = "PascalCase")]).to_string();
+    assert!(item_attributes(&files, "Inherits").contains(&snake));
+    assert!(item_attributes(&files, "Overrides").contains(&pascal));
+    let deny = quote::quote!(#[serde(deny_unknown_fields)]).to_string();
+    assert!(item_attributes(&files, "Kept").contains(&deny));
+    // Both container modifiers share a single serde attribute.
+    let both = quote::quote!(#[serde(default, deny_unknown_fields)]).to_string();
+    assert!(item_attributes(&files, "Wider").contains(&both));
+    // An explicit `false` clears the file default.
+    let cleared = item_attributes(&files, "Cleared");
+    assert!(!cleared.contains("deny_unknown_fields"), "{cleared}");
+}
+
+#[test]
+fn oneof_options_apply_and_unwrapped_oneofs_take_the_message_rules() {
+    let (result, files) = compile_options_files(
+        "oneof",
+        r#"
+        option (gin_tonic.v1.file) = {
+            message: { serde_default: true }
+        };
+        message Signal {
+            option (gin_tonic.v1.message) = { deny_unknown_fields: true };
+            int32 id = 1;
+            oneof signal_outcome {
+                option (gin_tonic.v1.oneof) = { serde_case: CASE_SNAKE };
+                int32 computed = 2;
+                string failed = 3;
+            }
+        }
+        message Outcome {
+            option (gin_tonic.v1.message) = {
+                serde_default: false
+                deny_unknown_fields: true
+            };
+            oneof outcome {
+                option (gin_tonic.v1.oneof) = { serde_case: CASE_SNAKE };
+                int32 computed = 1;
+                string failed = 2;
+            }
+        }
+        "#,
+    );
+    result.unwrap();
+    // A oneof inside a struct is a separate serde type: only its own rules apply.
+    let wrapped = item_attributes(&files, "SignalOutcome");
+    assert!(wrapped.contains("rename_all"), "{wrapped}");
+    assert!(!wrapped.contains("deny_unknown_fields"), "{wrapped}");
+    assert!(!wrapped.contains("default"), "{wrapped}");
+    // A message holding only a oneof is generated as the enum, so its rules apply to it.
+    let unwrapped = item_attributes(&files, "Outcome");
+    let deny = unwrapped.find("deny_unknown_fields").expect(&unwrapped);
+    let rename = unwrapped.find("rename_all").expect(&unwrapped);
+    assert!(deny < rename, "{unwrapped}");
+    assert!(!unwrapped.contains("default"), "{unwrapped}");
+}
+
+#[test]
+fn field_options_choose_types_and_add_attributes() {
+    let (result, source) = compile_options(
+        "field",
+        r#"
+        message Node {
+            map<string, int32> counts = 1 [(gin_tonic.v1.field) = { btree_map: true }];
+            int32 code = 2 [(gin_tonic.v1.field) = { deserialize_with: "crate::storage::decode" }];
+            Node child = 3 [(gin_tonic.v1.field) = { boxed: true }];
+            map<string, int32> plain = 4;
+            oneof choice {
+                int32 tagged = 5 [(gin_tonic.v1.field) = { deserialize_with: "crate::storage::tag" }];
+                Node nested = 6 [(gin_tonic.v1.field) = { boxed: true }];
+            }
+        }
+        "#,
+    );
+    result.unwrap();
+    assert!(
+        source.contains("pub counts: ::std::collections::BTreeMap<String, i32>"),
+        "{source}"
+    );
+    assert!(
+        source.contains("#[serde(deserialize_with = \"crate::storage::decode\")]"),
+        "{source}"
+    );
+    assert!(
+        source.contains("pub child: ::std::boxed::Box<Node>"),
+        "{source}"
+    );
+    // A map without the rule keeps the default hasher-backed map.
+    assert!(
+        source.contains("pub plain: ::gin_tonic::fxhash::FxHashMap<String, i32>"),
+        "{source}"
+    );
+    // Oneof members honour field rules as well.
+    assert!(
+        source.contains("#[serde(deserialize_with = \"crate::storage::tag\")]"),
+        "{source}"
+    );
+    assert!(source.contains("Nested(::std::boxed::Box<"), "{source}");
+}
+
+#[test]
+fn field_options_compose_with_configured_paths() {
+    let (result, source) = compile_options_with(
+        "compose",
+        r#"
+        message M {
+            map<string, int32> by_option = 1 [(gin_tonic.v1.field) = { btree_map: true }];
+            map<string, int32> by_config = 2;
+        }
+        "#,
+        |config| config.btree_map([".check.v1.M.by_config"]),
+    );
+    result.unwrap();
+    let source = source.join("\n");
+    assert!(
+        source.contains("pub by_option: ::std::collections::BTreeMap"),
+        "{source}"
+    );
+    assert!(
+        source.contains("pub by_config: ::std::collections::BTreeMap"),
+        "{source}"
+    );
+}
+
+#[test]
+fn unsupported_rust_options_fail_generation() {
+    let cases = [
+        (
+            r#"message M { int32 a = 1 [(gin_tonic.v1.field) = { btree_map: true }]; }"#,
+            "`(gin_tonic.v1.field.btree_map)` does not apply to fields other than maps",
+        ),
+        (
+            r#"message M { map<string, M> a = 1 [(gin_tonic.v1.field) = { boxed: true }]; }"#,
+            "`(gin_tonic.v1.field.boxed)` does not apply to map fields",
+        ),
+        (
+            r#"message M { int32 a = 1 [(gin_tonic.v1.field) = { deserialize_with: "not a path" }]; }"#,
+            "`(gin_tonic.v1.field.deserialize_with)` value `not a path` is not a Rust path",
+        ),
+        (
+            r#"message M { int32 b = 1; oneof o { int32 a = 2 [(gin_tonic.v1.field) = { deserialize_with: "not a path" }]; } }"#,
+            "check.v1.M.a: `(gin_tonic.v1.field.deserialize_with)`",
+        ),
+        (
+            r#"enum E { option (gin_tonic.v1.enum) = { strum_case: CASE_UNSPECIFIED }; E_A = 0; }"#,
+            "`(gin_tonic.v1.enum.strum_case)` value `CASE_UNSPECIFIED` is not supported",
+        ),
+        (
+            r#"message M { int32 a = 1; oneof o { option (gin_tonic.v1.oneof) = { serde_case: CASE_UNSPECIFIED }; int32 b = 2; } }"#,
+            "`(gin_tonic.v1.oneof.serde_case)` value `CASE_UNSPECIFIED` is not supported",
+        ),
+        (
+            r#"option (gin_tonic.v1.file) = { enum: { serde_case: CASE_UNSPECIFIED } }; enum E { E_A = 0; }"#,
+            "`(gin_tonic.v1.file.enum.serde_case)` value `CASE_UNSPECIFIED` is not supported",
+        ),
+        (
+            r#"message M { option (gin_tonic.v1.message) = { serde_default: true }; oneof o { int32 a = 1; } }"#,
+            "`(gin_tonic.v1.message.serde_default)` does not apply to a message holding only a oneof",
+        ),
+    ];
+    for (index, (body, expected)) in cases.into_iter().enumerate() {
+        let (result, _) = compile_options(&format!("unsupported-{index}"), body);
+        let error = result.expect_err(body).to_string();
+        assert!(error.contains(expected), "{body}: {error}");
+    }
+}

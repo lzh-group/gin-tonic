@@ -3,9 +3,7 @@
 //! Only a subset is supported; every other rule makes generation fail so nothing is ignored.
 
 use proc_macro2::{Literal, TokenStream};
-use protox::prost_reflect::{
-    DescriptorPool, DynamicMessage, FieldDescriptor, Kind, MessageDescriptor, Value,
-};
+use protox::prost_reflect::{DynamicMessage, FieldDescriptor, Kind, MessageDescriptor, Value};
 use quote::{ToTokens, format_ident, quote};
 
 use crate::codegen::{Generator, utils};
@@ -35,27 +33,16 @@ pub enum ValidationRuleError {
     OneofRules { oneof: String },
 }
 
-fn extension<'a>(
-    pool: &DescriptorPool,
-    name: &str,
-    options: &'a DynamicMessage,
-) -> Option<std::borrow::Cow<'a, Value>> {
-    let extension = pool.get_extension_by_name(name)?;
-    options
-        .has_extension(&extension)
-        .then(|| options.get_extension(&extension))
-}
-
 /// Reject message and oneof level rules.
 pub(crate) fn check_message(ty: &MessageDescriptor) -> Result<(), ValidationRuleError> {
     let pool = ty.parent_pool();
-    if extension(pool, MESSAGE_RULES, &ty.options()).is_some() {
+    if utils::extension(pool, MESSAGE_RULES, &ty.options()).is_some() {
         return Err(ValidationRuleError::MessageRules {
             message: ty.full_name().to_owned(),
         });
     }
     for oneof in ty.oneofs() {
-        if extension(pool, ONEOF_RULES, &oneof.options()).is_some() {
+        if utils::extension(pool, ONEOF_RULES, &oneof.options()).is_some() {
             return Err(ValidationRuleError::OneofRules {
                 oneof: oneof.full_name().to_owned(),
             });
@@ -71,7 +58,7 @@ pub(crate) fn field_attribute(
     field: &FieldDescriptor,
     variant: bool,
 ) -> Result<TokenStream, ValidationRuleError> {
-    let mut items = match extension(field.parent_pool(), FIELD_RULES, &field.options()) {
+    let mut items = match utils::extension(field.parent_pool(), FIELD_RULES, &field.options()) {
         Some(rules) => {
             let Value::Message(rules) = rules.as_ref() else {
                 unreachable!("buf.validate.field is a message extension");

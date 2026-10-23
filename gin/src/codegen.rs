@@ -5,6 +5,7 @@ pub mod external_type;
 pub(crate) mod messages;
 pub(crate) mod module;
 pub(crate) mod one_of;
+pub(crate) mod rust_options;
 #[cfg(feature = "tonic")]
 pub(crate) mod service;
 pub(crate) mod utils;
@@ -15,6 +16,7 @@ use std::path::PathBuf;
 pub use ctx::Generator;
 use external_type::ExternalType;
 use protox::file::{ChainFileResolver, GoogleFileResolver, IncludeFileResolver};
+pub use rust_options::RustOptionError;
 pub use validate::ValidationRuleError;
 
 /// [CompileConfig] transforming `*.proto` files into Rust code
@@ -246,6 +248,8 @@ pub enum CompilerError {
     #[error(transparent)]
     Syn(#[from] syn::Error),
     #[error(transparent)]
+    RustOption(#[from] RustOptionError),
+    #[error(transparent)]
     Validation(#[from] ValidationRuleError),
 }
 
@@ -271,7 +275,7 @@ impl protox::file::FileResolver for Resolver {
     }
 
     fn open_file(&self, name: &str) -> Result<protox::file::File, protox::Error> {
-        if name.ends_with("gin.proto") {
+        if name == "gin.proto" {
             return protox::file::File::from_source(name, GIN_PROTO);
         }
         let file = self.0.open_file(name)?;

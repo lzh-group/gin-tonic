@@ -1,7 +1,7 @@
 use protox::prost_reflect::MessageDescriptor;
 
 use crate::CompilerError;
-use crate::codegen::{Generator, case, enums, module, one_of, utils, validate};
+use crate::codegen::{Generator, case, enums, module, one_of, rust_options, utils, validate};
 
 /// generate message
 pub(crate) fn generate(
@@ -32,7 +32,8 @@ pub(crate) fn generate(
 
     tracing::info!("generating message: {qualified_name}");
 
-    let attributes = ctx.attributes(qualified_name);
+    let mut attributes = ctx.attributes(qualified_name);
+    attributes.extend(rust_options::message_attributes(&ty)?);
     let inferred_derives = utils::message_derives(ctx, &ty);
 
     let module = module::create_child(parent, module_path);
@@ -105,7 +106,7 @@ pub(crate) fn generate(
         let module_path = ty.name();
 
         for child in ty.child_enums() {
-            enums::generate(ctx, module, module_path, child);
+            enums::generate(ctx, module, module_path, child)?;
         }
         for child in ty.child_messages() {
             generate(ctx, module, module_path, child)?;

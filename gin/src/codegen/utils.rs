@@ -10,18 +10,21 @@ use crate::codegen::{Generator, case};
 
 const RUST_TYPE: &str = ".gin_tonic.v1.rust_type";
 
-pub fn ext_ref<'a>(
+/// Read a custom option from a descriptor's options by extension name.
+pub(crate) fn extension<'a>(
     pool: &DescriptorPool,
-    ext: &str,
+    name: &str,
     options: &'a DynamicMessage,
-) -> Option<&'a Value> {
-    let ext = pool.get_extension_by_name(ext);
+) -> Option<Cow<'a, Value>> {
+    let extension = pool.get_extension_by_name(name)?;
+    options
+        .has_extension(&extension)
+        .then(|| options.get_extension(&extension))
+}
 
-    if let Some(Cow::Borrowed(value)) = ext.map(|ext| options.get_extension(&ext)) {
-        Some(value)
-    } else {
-        None
-    }
+/// Whether a field carries the `rust_type` option.
+pub(crate) fn has_rust_type(field: &FieldDescriptor) -> bool {
+    extension(field.parent_pool(), RUST_TYPE, &field.options()).is_some()
 }
 
 pub fn resolve_message(ctx: &Generator, origin_type: &str, qualified_name: &str) -> TokenStream {
@@ -190,7 +193,7 @@ pub fn proto_attribute(field: &FieldDescriptor) -> TokenStream {
             let value_field = ty.map_entry_value_field();
 
             let key_resolved = if let Some(Value::String(_)) =
-                ext_ref(key_field.parent_pool(), RUST_TYPE, &options)
+                extension(key_field.parent_pool(), RUST_TYPE, &options).as_deref()
             {
                 None
             } else {
@@ -198,7 +201,7 @@ pub fn proto_attribute(field: &FieldDescriptor) -> TokenStream {
             };
 
             let value_resolved = if let Some(Value::String(_)) =
-                ext_ref(value_field.parent_pool(), RUST_TYPE, &options)
+                extension(value_field.parent_pool(), RUST_TYPE, &options).as_deref()
             {
                 None
             } else {
@@ -234,7 +237,9 @@ pub fn proto_attribute(field: &FieldDescriptor) -> TokenStream {
 pub fn field_type(ctx: &Generator, enclosed_type: &str, field: &FieldDescriptor) -> TokenStream {
     let options = field.options();
 
-    if let Some(Value::String(rust_type)) = ext_ref(field.parent_pool(), RUST_TYPE, &options) {
+    if let Some(Value::String(rust_type)) =
+        extension(field.parent_pool(), RUST_TYPE, &options).as_deref()
+    {
         // TODO Better error message.
         let path = syn::parse_str::<syn::Type>(rust_type).expect("Invalid path");
         return quote::quote!(#path);
@@ -256,7 +261,7 @@ pub fn field_type(ctx: &Generator, enclosed_type: &str, field: &FieldDescriptor)
             if cardinality == Cardinality::Repeated && ty.is_map_entry() {
                 let key_ty = field_type(ctx, enclosed_type, &ty.map_entry_key_field());
                 let value_ty = field_type(ctx, enclosed_type, &ty.map_entry_value_field());
-                return if ctx.is_btree_map(field.full_name()) {
+                return if is_btree_map(ctx, field) {
                     quote!(::std::collections::BTreeMap<#key_ty, #value_ty>)
                 } else {
                     quote!(::gin_tonic::fxhash::FxHashMap<#key_ty, #value_ty>)
@@ -359,7 +364,7 @@ pub(crate) fn message_derives(
             if copy && (field.is_list() || field.is_map() || is_boxed(ctx, &field)) {
                 return false;
             }
-            if ext_ref(field.parent_pool(), RUST_TYPE, &field.options()).is_some() {
+            if has_rust_type(&field) {
                 return false;
             }
             match field.kind() {
@@ -383,8 +388,9 @@ pub(crate) fn message_derives(
     quote!(#defaults #copies)
 }
 
-pub(crate) fn has_rust_type(field: &FieldDescriptor) -> bool {
-    ext_ref(field.parent_pool(), RUST_TYPE, &field.options()).is_some()
+pub(crate) fn is_btree_map(ctx: &Generator, field: &FieldDescriptor) -> bool {
+    ctx.is_btree_map(field.full_name())
+        || ctx.field_rules(field).is_some_and(|rules| rules.btree_map)
 }
 
 pub(crate) fn is_boxed(ctx: &Generator, field: &FieldDescriptor) -> bool {
@@ -392,12 +398,17 @@ pub(crate) fn is_boxed(ctx: &Generator, field: &FieldDescriptor) -> bool {
         || field
             .containing_oneof()
             .is_some_and(|oneof| ctx.is_boxed(&format!("{}.{}", oneof.full_name(), field.name())))
+        || ctx.field_rules(field).is_some_and(|rules| rules.boxed)
 }
 
+/// Field attributes from configured paths and from `(gin_tonic.v1.field)` rules.
 pub(crate) fn configured_field_attributes(ctx: &Generator, field: &FieldDescriptor) -> TokenStream {
     let mut attributes = ctx.field_attributes(field.full_name());
     if let Some(oneof) = field.containing_oneof() {
         attributes.extend(ctx.field_attributes(&format!("{}.{}", oneof.full_name(), field.name())));
+    }
+    if let Some(rules) = ctx.field_rules(field) {
+        attributes.extend(rules.attributes());
     }
     attributes
 }

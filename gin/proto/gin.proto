@@ -6,4 +6,67 @@ import "google/protobuf/descriptor.proto";
 
 extend google.protobuf.FieldOptions {
   optional string rust_type = 10250;
+  optional FieldRules field = 10251;
+}
+
+// Naming style applied by `strum(serialize_all)` and `serde(rename_all)`.
+enum Case {
+  CASE_UNSPECIFIED = 0;
+  CASE_LOWER = 1;
+  CASE_UPPER = 2;
+  CASE_PASCAL = 3;
+  CASE_CAMEL = 4;
+  CASE_SNAKE = 5;
+  CASE_SCREAMING_SNAKE = 6;
+  CASE_KEBAB = 7;
+}
+
+// Rules for generated enums, and for the enums generated from a `oneof`.
+message EnumRules {
+  // Derives `strum::AsRefStr` and `strum::EnumString` with this `serialize_all`.
+  optional Case strum_case = 1;
+  // Applies `serde(rename_all)` to the enum.
+  optional Case serde_case = 2;
+}
+
+// Container rules for a generated message. An explicit `false` clears a `true`
+// from the file default.
+message MessageRules {
+  // Applies `serde(default)`.
+  optional bool serde_default = 1;
+  // Applies `serde(deny_unknown_fields)`.
+  optional bool deny_unknown_fields = 2;
+}
+
+message FieldRules {
+  // Decodes this map field into a `BTreeMap` instead of the default map type.
+  optional bool btree_map = 1;
+  // Boxes the field to break a recursive type cycle.
+  optional bool boxed = 2;
+  // Rust path of a `deserialize_with` function.
+  optional string deserialize_with = 3;
+}
+
+// Defaults applied to every enum and message declared in a file. A rule set on
+// the type itself overrides the file default field by field. Oneofs are not
+// covered: they carry `(gin_tonic.v1.oneof)` of their own.
+message FileRules {
+  optional EnumRules enum = 1;
+  optional MessageRules message = 2;
+}
+
+extend google.protobuf.FileOptions {
+  optional FileRules file = 10251;
+}
+
+extend google.protobuf.MessageOptions {
+  optional MessageRules message = 10251;
+}
+
+extend google.protobuf.EnumOptions {
+  optional EnumRules enum = 10251;
+}
+
+extend google.protobuf.OneofOptions {
+  optional EnumRules oneof = 10251;
 }

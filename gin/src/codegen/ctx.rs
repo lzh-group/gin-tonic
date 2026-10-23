@@ -1,12 +1,13 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use proc_macro2::TokenStream;
-use protox::prost_reflect::DescriptorPool;
+use protox::prost_reflect::{DescriptorPool, FieldDescriptor};
 
 use crate::CompilerError;
 use crate::codegen::case::{Case, convert};
 use crate::codegen::external_type::ExternalType;
 use crate::codegen::module::Module;
+use crate::codegen::rust_options::{self, FieldRules};
 #[cfg(feature = "tonic")]
 use crate::codegen::service;
 use crate::codegen::{enums, external_type, messages, utils, validate};
@@ -19,6 +20,7 @@ pub struct Generator {
     field_attributes: Vec<(String, String)>,
     btree_maps: Vec<String>,
     boxed_fields: Vec<String>,
+    field_rules: HashMap<String, FieldRules>,
 
     #[cfg(feature = "tonic")]
     generate_services: bool,
@@ -47,6 +49,7 @@ impl Generator {
             field_attributes: vec![],
             btree_maps: vec![],
             boxed_fields: vec![],
+            field_rules: HashMap::new(),
 
             #[cfg(feature = "tonic")]
             generate_services: true,
@@ -117,6 +120,10 @@ impl Generator {
 
         let mut root = Module::new("<root>");
         let files = generated_files(pool);
+        self.field_rules = rust_options::field_rules(
+            pool.all_messages()
+                .filter(|ty| files.contains(ty.parent_file().name())),
+        )?;
 
         for ty in pool.all_enums() {
             // only top level types here
@@ -125,7 +132,7 @@ impl Generator {
             }
 
             let module_path = String::from(ty.package_name());
-            enums::generate(&self, &mut root, &module_path, ty);
+            enums::generate(&self, &mut root, &module_path, ty)?;
         }
 
         for ty in pool.all_messages() {
@@ -158,6 +165,11 @@ impl Generator {
 
     pub(crate) fn filter(&self, name: &str) -> bool {
         (self.type_filter)(name)
+    }
+
+    /// The `(gin_tonic.v1.field)` rules of a field in a generated file, checked up front.
+    pub(crate) fn field_rules(&self, field: &FieldDescriptor) -> Option<&FieldRules> {
+        self.field_rules.get(field.full_name())
     }
 
     pub(crate) fn attributes(&self, name: &str) -> TokenStream {

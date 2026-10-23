@@ -1,7 +1,7 @@
 use protox::prost_reflect::{FieldDescriptor, MessageDescriptor, OneofDescriptor};
 
 use crate::CompilerError;
-use crate::codegen::{Generator, case, enums, messages, module, utils, validate};
+use crate::codegen::{Generator, case, enums, messages, module, rust_options, utils, validate};
 
 pub(crate) fn generate(
     ctx: &Generator,
@@ -25,7 +25,8 @@ pub(crate) fn generate(
 
     tracing::info!("generating wrapped one of: {qualified_name}");
 
-    let attributes = ctx.attributes(qualified_name);
+    let mut attributes = ctx.attributes(qualified_name);
+    attributes.extend(rust_options::oneof_attributes(&ty)?);
 
     let module = module::create_child(parent, module_path);
 
@@ -47,6 +48,7 @@ pub(crate) fn generate(
 
         if utils::is_unit_type(&variant_type) {
             body.extend(quote::quote! {
+                #configured_attributes
                 #variant_name,
             });
         } else {
@@ -80,7 +82,8 @@ pub(crate) fn generate_unwrapped(
 
     tracing::info!("generating unwrapped one of: {qualified_name}");
 
-    let attributes = ctx.attributes(qualified_name);
+    let mut attributes = ctx.attributes(qualified_name);
+    attributes.extend(rust_options::unwrapped_oneof_attributes(&ty)?);
 
     let module = module::create_child(parent, module_path);
 
@@ -133,7 +136,7 @@ pub(crate) fn generate_unwrapped(
         let module_path = ty.name();
 
         for child in ty.child_enums() {
-            enums::generate(ctx, module, module_path, child);
+            enums::generate(ctx, module, module_path, child)?;
         }
         for child in ty.child_messages() {
             messages::generate(ctx, module, module_path, child)?;

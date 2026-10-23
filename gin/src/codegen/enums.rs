@@ -1,6 +1,7 @@
 use protox::prost_reflect::EnumDescriptor;
 
-use crate::codegen::{Generator, case, module};
+use crate::CompilerError;
+use crate::codegen::{Generator, case, module, rust_options};
 
 /// generate code for enumerations
 pub(crate) fn generate(
@@ -8,20 +9,21 @@ pub(crate) fn generate(
     parent: &mut module::Module,
     module_path: &str,
     ty: EnumDescriptor,
-) {
+) -> Result<(), CompilerError> {
     let qualified_name = ty.full_name();
 
     // external types are not generated
     if ctx.resolve_ident(qualified_name).is_some() {
-        return;
+        return Ok(());
     }
     if !ctx.filter(qualified_name) {
-        return;
+        return Ok(());
     }
 
     tracing::info!("generating enumeration: {qualified_name}");
 
-    let attributes = ctx.attributes(qualified_name);
+    let mut attributes = ctx.attributes(qualified_name);
+    attributes.extend(rust_options::enum_attributes(&ty)?);
 
     let module = module::create_child(parent, module_path);
 
@@ -69,4 +71,6 @@ pub(crate) fn generate(
     module.extend(quote::quote! {
         #item
     });
+
+    Ok(())
 }
